@@ -419,6 +419,7 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
    <div class=hh>
      <span class=lbl>HISTORIAL</span><span class=cnt id=wc>0</span>
    </div>
+   <p class=hint id=histWarn hidden style="color:var(--danger);font-weight:650"></p>
    <div class=hact>
      <button id=btnCsv onclick=copyCsv()>Copiar CSV</button>
      <a class=lnk href=/weighings.csv download>Descargar CSV</a>
@@ -495,8 +496,7 @@ async function tick(){
     el('last').innerHTML=
       '<div class=top><span class=big>'+f2(L.peso)+'</span><span class=k>lb</span>'+
       '<span class=chip>#'+L.n+'</span></div>'+
-      '<div class=meta>precio '+f2(L.precio)+'  ·  total '+f2(L.total)+
-      '  ·  '+(L.age<0?'—':('hace '+L.age+' s'))+'</div>';
+      '<div class=meta>precio '+f2(L.precio)+'  ·  total '+f2(L.total)+'</div>';
     if(L.id!=lastN && lastN>=0){ el('last').classList.remove('new');
       void el('last').offsetWidth; el('last').classList.add('new'); tabla(); }
     lastN=L.id;
@@ -504,6 +504,7 @@ async function tick(){
   el('wc').textContent=j.wcount;
   el('totval').innerHTML=f2(j.wsum)+'<i>lb</i>';
   el('totn').textContent=j.wcount+(j.wcount==1?' muestra':' muestras');
+  histNotice(j.hist);
   syncTgtInput('inSector', j.sector);
   syncTgtInput('inPisc',   j.piscina);
   syncTgtInput('inMalla', j.mTgt);
@@ -512,6 +513,16 @@ async function tick(){
   tgtProgress('subBin',   j.bSum, j.bTgt, 'BIN '+j.bId);
   groupsClosed(j);
  }catch(e){ el('live').classList.remove('up'); }
+}
+// aviso sobre la memoria permanente del historial (archivo en flash del ESP)
+function histNotice(h){
+  var w=el('histWarn'), t='';
+  if(h){
+    if(h.full) t='⚠ Memoria del historial llena: los pesajes nuevos ya no se guardan en el archivo permanente. Descarga el CSV y luego pulsa "Borrar todo".';
+    else if(!h.ok) t='⚠ Sin memoria permanente: solo se conservan los últimos pesajes (unos 120). Descarga el CSV con frecuencia.';
+    else if(h.pct>=85) t='⚠ Memoria del historial al '+h.pct+' %. Descarga el CSV pronto.';
+  }
+  w.textContent=t; w.hidden=(t==='');
 }
 // pone el objetivo en el server (se guarda en NVS, sobrevive a un reinicio)
 function saveTgt(kind,val){
@@ -605,24 +616,31 @@ async function tabla(){
   var j=await (await fetch('/weighings',{cache:'no-store'})).json();
   var box=el('whist');
   if(!j.items||!j.items.length){ box.innerHTML='<div class=empty>sin pesajes todavía</div>'; return; }
-  // subtotal por grupo (BIN / malla), sobre lo que se llego a traer aqui
+  // subtotal por grupo (BIN / malla): el ESP manda el de TODO el historial (j.bins / j.grp).
+  // Si no manda alguno, se suma de las filas que llegaron (parcial: solo las ultimas 30).
   var binSub={}, mallaSub={};
+  (j.bins||[]).forEach(function(x){ binSub[x.b]=x.s; });
+  (j.grp||[]).forEach(function(x){ mallaSub[x.b+'-'+x.m]=x.s; });   // la malla se reinicia en cada BIN -> clave (bin,malla)
+  var locB={}, locM={};
   for(var i=0;i<j.items.length;i++){var w=j.items[i], v=(w.v==null||isNaN(w.v))?0:w.v;
-    binSub[w.b]=(binSub[w.b]||0)+v;
-    var mk=w.b+'-'+w.m; mallaSub[mk]=(mallaSub[mk]||0)+v;   // la malla se reinicia en cada BIN -> clave (bin,malla)
+    locB[w.b]=(locB[w.b]||0)+v;
+    var mk=w.b+'-'+w.m; locM[mk]=(locM[mk]||0)+v;
   }
+  // el server manda el reciente primero; se muestra del mas viejo al mas nuevo:
+  // BIN 1 (Malla 1, 2, 3…) → BIN 2 (Malla 1, 2…), y dentro de cada malla del pesaje 1 en adelante
+  var items=j.items.slice().reverse();
   var h='', curB=null, curM=null;
-  for(var i=0;i<j.items.length;i++){var w=j.items[i];
-    if(w.b!==curB){ h+=ghdr('BIN '+w.b, binSub[w.b]); curB=w.b; curM=null; }
-    if(w.m!==curM){ h+=ghdr('Malla '+w.m, mallaSub[w.b+'-'+w.m], true); curM=w.m; }
-    var age=(w.age<0)?'':(' · hace '+w.age+' s');
+  for(var i=0;i<items.length;i++){var w=items[i];
+    var kk=w.b+'-'+w.m;
+    if(w.b!==curB){ h+=ghdr('BIN '+w.b, binSub[w.b]!==undefined?binSub[w.b]:locB[w.b]); curB=w.b; curM=null; }
+    if(w.m!==curM){ h+=ghdr('Malla '+w.m, mallaSub[kk]!==undefined?mallaSub[kk]:locM[kk], true); curM=w.m; }
     h+='<div class=wrow data-id="'+w.id+'">'+
          '<button class=wr-del type=button>Borrar</button>'+
          '<div class=wr-front>'+
            '<div class=wr-top><span class=wr-n>#'+w.n+'</span>'+
              '<span class=wr-v>'+f2(w.v)+'<i>lb</i></span>'+
              '<span class=wr-t>'+esc(hhmm(w.t))+'</span></div>'+
-           '<div class=wr-sub>precio '+f2(w.pu)+' · total '+f2(w.tot)+age+'</div>'+
+           '<div class=wr-sub>precio '+f2(w.pu)+' · total '+f2(w.tot)+'</div>'+
          '</div>'+
        '</div>';
   }
@@ -770,6 +788,13 @@ static void handleApi() {
   h += ",\"source\":\""; h += src; h += "\"}";
   h += ",\"sector\":";  jstr(h, g_sector);
   h += ",\"piscina\":"; jstr(h, g_piscina);
+  { WeighArchiveInfo ai; weighArchiveInfo(&ai);      // estado del archivo permanente de pesajes
+    h += ",\"hist\":{\"ok\":";   h += ai.ok   ? "true" : "false";
+    h += ",\"full\":";           h += ai.full ? "true" : "false";
+    h += ",\"pct\":";            h += (int)ai.pct;
+    h += ",\"n\":";              h += (unsigned long)ai.stored;
+    h += "}";
+  }
   h += ",\"agree\":"; h += (agree < 0 ? "null" : (agree ? "true" : "false"));
   h += ",\"capstate\":\""; h += weighStateName(); h += "\"";
   h += ",\"rssi\":"; h += (int)WiFi.RSSI();
@@ -807,37 +832,77 @@ static void handleWeighings() {
     h += ",\"age\":"; h += (w[i].ms ? String((now - w[i].ms) / 1000) : String("-1"));
     h += ",\"t\":\""; h += ts; h += "\"}";
   }
+  // Subtotales de las mallas y BIN que aparecen en estas filas, calculados sobre
+  // TODO el historial (no solo sobre estas 30 filas).  El panel los usa en las
+  // cabeceras "BIN n" / "Malla m".
+  h += "],\"grp\":[";
+  { uint16_t sb[24], sm[24]; int ns = 0; bool first = true;
+    for (int i = 0; i < n; i++) {
+      bool seen = false;
+      for (int q = 0; q < ns; q++) if (sb[q] == w[i].bin && sm[q] == w[i].malla) { seen = true; break; }
+      if (seen || ns >= 24) continue;
+      sb[ns] = w[i].bin; sm[ns] = w[i].malla; ns++;
+      float s; uint32_t c;
+      if (!weighGroupSum(w[i].bin, w[i].malla, &s, &c)) continue;
+      if (!first) h += ','; first = false;
+      h += "{\"b\":"; h += w[i].bin; h += ",\"m\":"; h += w[i].malla;
+      h += ",\"s\":"; h += String(s, 2); h += ",\"c\":"; h += (unsigned long)c; h += "}";
+    }
+  }
+  h += "],\"bins\":[";
+  { uint16_t sb[24]; int ns = 0; bool first = true;
+    for (int i = 0; i < n; i++) {
+      bool seen = false;
+      for (int q = 0; q < ns; q++) if (sb[q] == w[i].bin) { seen = true; break; }
+      if (seen || ns >= 24) continue;
+      sb[ns++] = w[i].bin;
+      float s; uint32_t c;
+      if (!weighBinSum(w[i].bin, &s, &c)) continue;
+      if (!first) h += ','; first = false;
+      h += "{\"b\":"; h += w[i].bin;
+      h += ",\"s\":"; h += String(s, 2); h += ",\"c\":"; h += (unsigned long)c; h += "}";
+    }
+  }
   h += "]}";
   S->sendHeader("Cache-Control", "no-store");
   S->send(200, "application/json", h);
 }
 
-static void handleWeighingsCsv() {
-  Weighing* w = (Weighing*)malloc(sizeof(Weighing) * WEIGH_LOG_SIZE);
-  if (!w) { S->send(500, "text/plain", "sin memoria"); return; }
-  int n = weighGet(w, WEIGH_LOG_SIZE);            // reciente primero
+//  CSV con TODO el historial (archivo permanente + lo del buffer aun no archivado),
+//  del pesaje 1 al n.  Se manda por trozos de ~1,2 KB para no acumular todo en RAM.
+struct CsvCtx { String buf; uint32_t n; };
 
+static bool csvVisit(const Weighing& w, void* p) {
+  CsvCtx* c = (CsvCtx*)p;
+  char ts[24]; isoLocal(w.epoch, ts, sizeof(ts));
+  c->n++;
+  c->buf += String(c->n);  c->buf += ';';            // nº = posicion (contiguo)
+  c->buf += String(w.peso, 2);   c->buf += ';';
+  c->buf += (isnan(w.precio) ? String("") : String(w.precio, 2)); c->buf += ';';
+  c->buf += (isnan(w.total)  ? String("") : String(w.total, 2));  c->buf += ';';
+  c->buf += String(w.malla); c->buf += ';';
+  c->buf += String(w.bin);   c->buf += ';';
+  c->buf += ts;              c->buf += ';';
+  c->buf += g_sector;        c->buf += ';';          // de la jornada: valor actual al exportar
+  c->buf += g_piscina;       c->buf += '\n';
+  if (c->buf.length() >= 1200) {
+    if (!S->client().connected()) return false;      // el movil se fue: no seguir
+    S->sendContent(c->buf);
+    c->buf = "";
+  }
+  return true;
+}
+
+static void handleWeighingsCsv() {
   S->sendHeader("Content-Disposition", "attachment; filename=pesajes.csv");
   S->sendHeader("Cache-Control", "no-store");
   S->setContentLength(CONTENT_LENGTH_UNKNOWN);
   S->send(200, "text/csv", "");
   S->sendContent("n;peso;precio_unit;total;malla;bin;hora_local;sector;piscina\n");
-  String row; row.reserve(256);
-  for (int i = n - 1; i >= 0; i--) {                 // del mas viejo (nº 1) al mas nuevo (nº n)
-    char ts[24]; isoLocal(w[i].epoch, ts, sizeof(ts));
-    row  = String(n - i);  row += ';';                 // nº = posicion (contiguo)
-    row += String(w[i].peso, 2);   row += ';';
-    row += (isnan(w[i].precio) ? String("") : String(w[i].precio, 2)); row += ';';
-    row += (isnan(w[i].total)  ? String("") : String(w[i].total, 2));  row += ';';
-    row += String(w[i].malla); row += ';';
-    row += String(w[i].bin);   row += ';';
-    row += ts; row += ';';
-    row += g_sector;  row += ';';                      // de la jornada: valor actual al exportar
-    row += g_piscina; row += '\n';
-    S->sendContent(row);
-  }
+  CsvCtx c; c.n = 0; c.buf.reserve(1400);
+  weighForEachAll(csvVisit, &c);
+  if (c.buf.length()) S->sendContent(c.buf);
   S->sendContent("");
-  free(w);
 }
 
 static void handleWeighingsClear() {

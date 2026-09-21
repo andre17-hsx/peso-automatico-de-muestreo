@@ -33,7 +33,7 @@
 
 //  Hora por NTP (solo si hay internet).  Sin internet, el movil del operario
 //  pone la hora al abrir el panel (POST /settime); si no, el historial usa
-//  solo el orden y "hace N s" de la sesion actual.
+//  solo el orden.
 #define ENABLE_NTP       1
 #define NTP_SERVER       "pool.ntp.org"
 
@@ -143,6 +143,10 @@
 #define WEIGH_LOG_SIZE      120     // ultimos N pesajes (en RAM y en flash/NVS)
 #define WEIGH_EPS           0.005f  // diferencia de peso considerada "el mismo valor"
 #define WEIGH_PERSIST       1       // 1 = guarda el historial en NVS (sobrevive apagon)
+#define WEIGH_ARCHIVE       1       // 1 = ademas del buffer de WEIGH_LOG_SIZE, guarda TODOS los pesajes
+                                    //   en un archivo en flash (LittleFS, particion "spiffs") hasta que
+                                    //   se pulse "Borrar todo".  Si la particion no existe o se llena, el
+                                    //   programa sigue con el buffer.  0 = comportamiento anterior.
 
 // --- ronda ag: retiro rapido mas fiable + menos latencia -------------------
 //  Si algo va mal y hay que volver al comportamiento anterior:

@@ -65,10 +65,35 @@ float       weighLatched();            // PESO del ultimo pesaje NO borrado (NAN
 bool        weighLatchedFull(Weighing* out);   // el ultimo pesaje entero; false si ninguno
 uint32_t    weighTotal();              // total desde el arranque (monotono, cuenta los borrados)
 float       weighSum();                // suma de los PESO NO borrados desde el ultimo Borrar
-int         weighCount();              // pesajes NO borrados en el buffer
-int         weighGet(Weighing* out, int maxn);   // historial (sin borrados), reciente primero
-void        weighClear();                         // borra TODO
-bool        weighDeleteOne(uint32_t id);          // borra una fila por su id; false si no existe
+int         weighCount();              // pesajes NO borrados en TODO el historial (no solo el buffer)
+int         weighGet(Weighing* out, int maxn);   // los ultimos maxn del BUFFER (sin borrados), reciente primero
+void        weighClear();                         // borra TODO (buffer + archivo permanente)
+bool        weighDeleteOne(uint32_t id);          // borra una fila por su id (solo las del buffer); false si no existe
+
+// ---- historial COMPLETO (buffer + archivo permanente, ver histarch.h) ----
+// El buffer guarda los ultimos WEIGH_LOG_SIZE pesajes; el archivo guarda TODOS
+// hasta el proximo "Borrar todo".  Si el archivo no esta disponible, todo sigue
+// funcionando con el buffer solo.
+//
+// Recorre TODOS los pesajes NO borrados, del mas viejo al mas nuevo.  cb
+// devuelve false para parar.  (ms no se rellena en los que vienen del archivo.)
+typedef bool (*WeighVisit)(const Weighing& w, void* ctx);
+void        weighForEachAll(WeighVisit cb, void* ctx);
+
+// Subtotal de una malla / de un BIN sobre TODO el historial.  false = ese grupo
+// no se conoce (no hay pesajes, o es de las mallas mas antiguas: la tabla guarda
+// las ultimas 800).
+bool        weighGroupSum(uint16_t bin, uint16_t malla, float* sum, uint32_t* cnt);
+bool        weighBinSum(uint16_t bin, float* sum, uint32_t* cnt);
+
+// Estado del archivo permanente (para avisar al operario).
+struct WeighArchiveInfo {
+  bool     ok;        // montado y se puede seguir archivando
+  bool     full;      // capacidad agotada: los pesajes nuevos ya no se archivan
+  uint8_t  pct;       // % de la capacidad usado
+  uint32_t stored;    // registros en el archivo
+};
+void        weighArchiveInfo(WeighArchiveInfo* out);
 
 // Se invoca UNA vez cuando un pesaje queda CONFIRMADO (plataforma vaciada tras
 // una lectura estable).  Aqui se engancha el envio permanente (MQTT / HTTP).

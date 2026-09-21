@@ -40,8 +40,20 @@ Lo desactivado **no se compila** (ni reserva pines ni RAM).
 - esp32 (Espressif) ≥ 3.0 · Placa: **ESP32S3 Dev Module** (genérico, sirve para el Super Mini)
 - **PSRAM: `Disabled`** (o `QSPI PSRAM` si el menú obliga a elegir tipo) — con
   `ENABLE_OCR 0` no hace falta, era solo para los buffers de la cámara
-- Flash Size: `4MB (32Mb)` · Partition: cualquiera pensado para 4MB (p.ej.
-  `Minimal SPIFFS (1.9MB APP/190KB SPIFFS)`) — confirma que el binario entra
+- Flash Size: `4MB (32Mb)` · Partition: uno pensado para 4MB **que incluya SPIFFS**. Esa
+  partición es donde se guarda el **historial completo** de pesajes (ver sección 3); sin ella
+  el programa funciona igual, pero solo conserva los últimos 120 pesajes. El binario ocupa
+  ~1,1 MB y no se usa OTA, así que cualquiera de estos sirve; la diferencia es cuántos
+  pesajes caben (unos 24 bytes cada uno, usando el 75 % de la partición):
+
+  | Esquema | SPIFFS | Pesajes |
+  |---|---|---|
+  | `Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)` | 128 KB | ~4 000 |
+  | `Huge APP (3MB No OTA/1MB SPIFFS)` | 896 KB | ~28 000 |
+  | `No OTA (2MB APP/2MB SPIFFS)` *(recomendado)* | 1,9 MB | ~61 000 |
+
+  La primera vez que arranca con una partición nueva la formatea (unos segundos, más
+  cuanto más grande sea) antes de levantar el WiFi.
 - USB CDC On Boot: **`Enabled`** — esta placa NO tiene CH340, es un solo
   USB-C nativo; con `Disabled` no sale nada por el Monitor Serie
 - Monitor Serie **115200** → sale la IP / la red creada.
@@ -68,8 +80,7 @@ desconocida. Si el mini-navegador del móvil va lento, ciérralo y abre el naveg
 normal → `192.168.4.1`.
 
 Sin internet no hay NTP: el **móvil del operario pone la hora** al abrir el panel
-(`/settime`), así el historial lleva hora real. Si tampoco, queda el orden y
-"hace N s" de la sesión.
+(`/settime`), así el historial lleva hora real. Si tampoco, queda solo el orden.
 
 **Recuperación automática del AP** (modos 0 y 2): si el driver de WiFi detiene la red
 propia (evento `AP_STOP`, o el modo deja de ser AP), el firmware la vuelve a levantar
@@ -164,7 +175,8 @@ firmware no convierte nada, así que la balanza debe estar en **libras**):
 | `WEIGH_ZERO_MS` | cuánto dura el negativo para confirmar una tara | `400` |
 | `WEIGH_STABLE_MS` | (solo OCR) número quieto → "estable" | `700` |
 | `WEIGH_INVALID_MS` | display apagado este tiempo → cierra | `2500` |
-| `WEIGH_LOG_SIZE` | pesajes que guarda en memoria/NVS | `120` |
+| `WEIGH_LOG_SIZE` | pesajes recientes que guarda en el buffer de memoria/NVS | `120` |
+| `WEIGH_ARCHIVE` | `1` = además del buffer, guarda **todos** los pesajes en un archivo en flash hasta *Borrar todo*; `0` = solo el buffer | `1` |
 | `WEIGH_V2` | `0` = comportamiento anterior a la ronda ag (sin rebote/anti-meneo/commit rápido) | `1` |
 | `WEIGH_DIP` | el neto rebota a menos de `-esto` al retirar de verdad (la celda rebota; una tara nunca baja de 0) | `0.05` |
 | `WEIGH_SETTLE_MS` | con señal de retiro, guarda a los ~350 ms en vez de `WEIGH_CONFIRM_MS` | `350` |
@@ -196,9 +208,12 @@ lb). La estructura es: **cada BIN contiene varias mallas, y cada malla varios pe
   NVS (sobreviven a apagones). **Borrar todo** vuelve a BIN 1 / Malla 1 pero conserva los
   objetivos.
 
-Limitación conocida: **borrar una fila suelta** del historial ajusta el peso total
-acumulado, pero **no** reajusta los acumulados de la malla/BIN en curso ni reabre grupos
-ya cerrados.
+Limitaciones conocidas:
+- **Borrar una fila suelta** del historial ajusta el peso total acumulado y los subtotales
+  de su malla/BIN, pero **no** reajusta los acumulados de la malla/BIN *en curso* ni reabre
+  grupos ya cerrados.
+- Solo se pueden borrar filas sueltas de las **últimas 120** (las del buffer); las más
+  antiguas quedan en el archivo y en el CSV.
 
 ### Panel `/` (para el operario)
 
@@ -232,9 +247,21 @@ enlaces a `/config` y `/sniffer`), que sigue disponible entrando a esas rutas di
 - Cada pesaje guarda los **3 campos**: `peso`, `precio unitario`, `total` (el precio/total
   tal como los mostraba la balanza al estabilizarse el peso).
 - El panel muestra **lb**. Los umbrales `WEIGH_*` se interpretan en esa misma unidad.
-- **El historial se guarda en NVS** (`WEIGH_PERSIST 1`): sobrevive a apagones / cambio de
-  batería. Últimos `WEIGH_LOG_SIZE` (120). Al reiniciar se recarga y el Monitor Serie dice
-  `historial cargado de NVS: N`.
+- **El historial se guarda en dos niveles** y sobrevive a apagones / cambio de batería:
+  - un **buffer de los últimos `WEIGH_LOG_SIZE` (120) pesajes** en NVS: es lo que muestra el
+    panel y lo que se puede borrar fila a fila. Al reiniciar se recarga (`historial cargado
+    de NVS: N`).
+  - un **archivo permanente** en flash (LittleFS, partición `spiffs`, `histarch.cpp`) con
+    **todos** los pesajes hasta que se pulse *Borrar todo*. Es de solo-añadir y se escribe en
+    lotes de 8 pesajes (`HIST_BATCH`) para no desgastar la flash; entre lote y lote los
+    pesajes ya están a salvo en el buffer y, si se apaga antes, se archivan al reiniciar.
+    La capacidad depende de la partición SPIFFS elegida (~4 000 pesajes con *Minimal
+    SPIFFS*, ~61 000 con *No OTA 2MB/2MB*; ver sección 2); al llegar al 85 % el panel avisa
+    para que descargues el CSV. Si LittleFS no monta o el archivo se llena, todo sigue como
+    antes con el buffer (el panel lo avisa).
+  - El **CSV** trae siempre todo (archivo + buffer). El **peso total acumulado**, el nº de
+    muestras y los **subtotales de BIN/malla** del panel se calculan sobre todo el
+    historial, no solo sobre lo que se ve. El panel muestra las últimas 30 filas.
 - `weighOnCommit(cb)` en `weighlog.h`: gancho para el **envío a un servidor** (pendiente) —
   salta 1 vez al confirmarse cada pesaje, con los 3 campos.
 
@@ -243,8 +270,8 @@ enlaces a `/config` y `/sniffer`), que sigue disponible entrando a esas rutas di
 | Ruta | | Qué hace |
 |---|---|---|
 | `/` | | panel (se adapta a lo que esté activo) |
-| `/api` | | JSON estado en vivo (incluye acumulados y objetivos de malla/BIN, sector, piscina) |
-| `/weighings` · `/weighings.csv` | | historial de pesajes (JSON / CSV) |
+| `/api` | | JSON estado en vivo (incluye acumulados y objetivos de malla/BIN, sector, piscina y el estado del archivo permanente `hist`) |
+| `/weighings` · `/weighings.csv` | | historial: JSON de las últimas 30 filas con los subtotales de sus mallas/BIN (`grp`, `bins`) / CSV con **todo** el historial |
 | `/weighings/del?id=N` | | borra una fila |
 | `/weighings/clear` | | borra el historial (RAM + NVS); conserva objetivos, sector y piscina |
 | `/targets?malla=200&bin=800` | | pone los objetivos en lb (`0` lo desactiva; si falta un parámetro, ese no cambia) |
@@ -408,7 +435,8 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
 | `config.example.h` | plantilla de configuración con claves de ejemplo → copiar a `config.h` |
 | `config.h` | **todo lo ajustable**: modo, WiFi, TZ, pines y mapa del sniffer, umbrales (no se versiona) |
 | `seg7.h` | tabla de 7 segmentos (compartida) |
-| `weighlog.h/.cpp` | máquina de estados del pesaje + historial + agrupación malla/BIN (NVS) |
+| `weighlog.h/.cpp` | máquina de estados del pesaje + buffer de los últimos pesajes + agrupación malla/BIN (NVS) |
+| `histarch.h/.cpp` | archivo permanente con **todos** los pesajes (LittleFS, solo-añadir) |
 | `ocr7seg.h/.cpp` | cámara + análisis de segmentos (solo si `ENABLE_OCR`) |
 | `sniffer_tm1640.h/.cpp` | ISR del bus DA/SL + TM1640 (solo si `ENABLE_SNIFFER`) |
 | `web_ui.h/.cpp` | servidor web y páginas |
@@ -427,6 +455,8 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
 - **El banner de la red a veces no sale en el Monitor Serie** (con el USB nativo, el
   inicio del log puede perderse al resetear). No significa que la red no exista: míralo en
   la lista WiFi del móvil.
+- **Descargar el CSV** recorre todo el historial y ocupa al ESP unos instantes (más cuantos
+  más pesajes haya): no lo descargues mientras se está pesando.
 - **La red desaparece con la caja cerrada**: ver *Alimentación y montaje* (sección 2).
 - Si la placa se reinicia al conectar la WiFi (brownout), aliméntala por un
   USB-C con buena corriente.

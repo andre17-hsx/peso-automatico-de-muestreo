@@ -76,7 +76,8 @@ Con el mapa de la Fase 1, el firmware:
 - Escucha pasiva → reconstruye los 16 bytes en cada refresco.
 - Aplica el mapa → PESO, PRECIO, TOTAL, puntos decimales, icono ESTABLE.
 - Detecta cuándo se retira una gaveta y guarda **un pesaje** (distingue tara de retiro real);
-  el historial sobrevive a apagones (NVS).
+  todos los pesajes se conservan (sobreviven a apagones) hasta que se pulse *Borrar todo*:
+  los últimos 120 en NVS y el historial completo en un archivo en flash (LittleFS).
 - Agrupa los pesajes en **mallas y BIN** con objetivos que escribe el operario, y avisa con un
   pop-up cuando se cierra un grupo.
 - Publica todo por WiFi en un **panel web** (la placa crea su propia red) y exporta CSV.

@@ -4,6 +4,7 @@
 // ===========================================================================
 #include "config.h"
 #include "weighlog.h"
+#include "histarch.h"
 #include <math.h>
 #include <time.h>
 #include <Preferences.h>
@@ -50,6 +51,9 @@
 #ifndef WEIGH_SETTLE_MS
 #define WEIGH_SETTLE_MS     350
 #endif
+#ifndef HIST_BATCH
+#define HIST_BATCH          8      // cada cuantos pesajes se pasan al archivo permanente (en lote)
+#endif
 
 // -------------------------- historial (ring buffer) -----------------------
 static portMUX_TYPE  g_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -59,6 +63,43 @@ static uint32_t      g_total = 0;      // total desde el primer arranque (monoto
 static int           g_head  = 0;      // proxima posicion a escribir
 static float         g_latched = NAN;
 static double        g_sumAll = 0;     // suma de TODOS los pesos desde el ultimo Borrar
+
+// ---- totales sobre TODO el historial (archivo + buffer), guardados en RAM ----
+//  Sirven para mostrar el nº de muestras y los subtotales de BIN/malla sin
+//  releer el archivo en cada peticion.  Se reconstruyen al arrancar.
+struct GAgg { uint16_t bin, malla; uint32_t cnt; double sum; };
+#define AGG_MAX 800                     // ultimas 800 mallas; si se llena se descartan las mas antiguas
+static GAgg     g_agg[AGG_MAX];
+static int      g_aggN  = 0;
+static uint32_t g_alive = 0;            // pesajes NO borrados desde el ultimo Borrar (todo el historial)
+
+// busca desde el final: los grupos recientes son los ultimos de la tabla
+static GAgg* aggFind(uint16_t bin, uint16_t malla) {
+  for (int i = g_aggN - 1; i >= 0; i--)
+    if (g_agg[i].bin == bin && g_agg[i].malla == malla) return &g_agg[i];
+  return nullptr;
+}
+static void aggAdd(uint16_t bin, uint16_t malla, float peso) {
+  GAgg* g = aggFind(bin, malla);
+  if (!g) {
+    if (g_aggN >= AGG_MAX) {            // tabla llena: se descarta la malla mas antigua (el panel
+      memmove(&g_agg[0], &g_agg[1],     // solo muestra las recientes, que son las que importan)
+              sizeof(GAgg) * (AGG_MAX - 1));
+      g_aggN = AGG_MAX - 1;
+    }
+    g = &g_agg[g_aggN++];
+    g->bin = bin; g->malla = malla; g->cnt = 0; g->sum = 0;
+  }
+  g->cnt++;
+  if (!isnan(peso)) g->sum += peso;
+}
+static void aggSub(uint16_t bin, uint16_t malla, float peso) {
+  GAgg* g = aggFind(bin, malla);
+  if (!g || g->cnt == 0) return;
+  g->cnt--;
+  if (!isnan(peso)) g->sum -= peso;
+  if (g->cnt == 0) g->sum = 0;          // sin restos de redondeo
+}
 
 // -------------------- agrupacion MALLA / BIN (ver weighlog.h) --------------
 static uint16_t g_mallaId = 1, g_binId = 1;             // grupo EN CURSO (arranca en 1)
@@ -234,6 +275,86 @@ static long nowEpoch() {
   return (t > 1700000000) ? (long)t : 0;         // hora real (post-2023) o 0
 }
 
+// ---------------------- archivo permanente (ver histarch.h) ----------------------
+// Pasa al archivo los pesajes del buffer que todavia no estan (ids > ultimo
+// archivado), del mas viejo al mas nuevo y con UNA sola escritura.  Se llama en
+// lotes (HIST_BATCH) y al arrancar.  Mientras esperan, esos pesajes ya estan a
+// salvo en el buffer (NVS): si se apaga antes, se archivan en el proximo arranque.
+// Si el archivo no esta disponible, no hace nada.
+static void archiveFlushPending() {
+  if (!histWritable()) return;
+  uint32_t lastId = histLastId();
+  HRec* tmp = (HRec*)malloc(sizeof(HRec) * WEIGH_LOG_SIZE);
+  if (!tmp) return;
+  int cnt = 0;
+  portENTER_CRITICAL(&g_mux);
+  for (int k = g_count - 1; k >= 0; k--) {                       // del mas viejo al mas nuevo
+    int idx = (g_head - 1 - k + WEIGH_LOG_SIZE * 2) % WEIGH_LOG_SIZE;
+    uint32_t id = (uint32_t)(g_total - k);
+    if (id <= lastId || g_log[idx].epoch == -1) continue;        // ya archivado / borrado antes de archivar
+    HRec& r = tmp[cnt++];
+    r.id     = id;
+    r.peso   = g_log[idx].peso;
+    r.precio = g_log[idx].precio;
+    r.total  = g_log[idx].total;
+    r.epoch  = (int32_t)g_log[idx].epoch;
+    r.malla  = g_log[idx].malla;
+    r.bin    = g_log[idx].bin;
+  }
+  portEXIT_CRITICAL(&g_mux);
+  if (cnt > 0) {
+    uint32_t t0 = millis();
+    size_t saved = histAppendMany(tmp, (size_t)cnt);
+    if (saved > 0 || !histFull())            // lleno: ya se aviso, no repetir en cada pesaje
+      Serial.printf("[hist] +%u de %d pesajes al archivo (%lu ms; %lu registros, %u%% usado)\n",
+                    (unsigned)saved, cnt, (unsigned long)(millis() - t0),
+                    (unsigned long)histCount(), (unsigned)histUsedPct());
+  }
+  free(tmp);
+}
+
+// Recalcula g_alive y la tabla de subtotales: todo el archivo (sin borrados) + lo
+// del buffer que aun no esta archivado.  Sin archivo, queda solo lo del buffer.
+static bool rebuildVisit(const HRec& r, void*) {
+  aggAdd(r.bin, r.malla, r.peso);
+  g_alive++;
+  return true;
+}
+static void rebuildTotals() {
+  g_aggN = 0;
+  g_alive = 0;
+  histForEach(rebuildVisit, nullptr);
+  uint32_t lastId = histLastId();
+  for (int k = g_count - 1; k >= 0; k--) {
+    int idx = (g_head - 1 - k + WEIGH_LOG_SIZE * 2) % WEIGH_LOG_SIZE;
+    uint32_t id = (uint32_t)(g_total - k);
+    if (id > lastId && g_log[idx].epoch != -1) {
+      aggAdd(g_log[idx].bin, g_log[idx].malla, g_log[idx].peso);
+      g_alive++;
+    }
+  }
+}
+
+// Monta el archivo y lo deja consistente con el buffer cargado de NVS.
+static void archiveBoot() {
+  if (!histBegin()) return;                                      // sin archivo: todo como antes
+  if (histLastId() > g_total) {
+    // El contador de NVS va por detras del archivo (NVS danado o borrado por fuera).
+    // Nunca se descarta el archivo: se continua la numeracion desde su ultimo id.
+    // El buffer de NVS queda atras (sus pesajes ya estan en el archivo) y se vacia.
+    Serial.printf("[hist] AVISO: contador NVS (%lu) por detras del archivo (%lu) -> se continua desde el archivo\n",
+                  (unsigned long)g_total, (unsigned long)histLastId());
+    portENTER_CRITICAL(&g_mux);
+    g_count = 0; g_head = 0; g_total = histLastId();
+    portEXIT_CRITICAL(&g_mux);
+  }
+  for (int k = g_count - 1; k >= 0; k--) {                       // borrados que el buffer sabe y el archivo no
+    int idx = (g_head - 1 - k + WEIGH_LOG_SIZE * 2) % WEIGH_LOG_SIZE;
+    uint32_t id = (uint32_t)(g_total - k);
+    if (g_log[idx].epoch == -1 && id <= histLastId()) histMarkDeleted(id);
+  }
+}
+
 // añade UNA entrada nueva al historial y devuelve una copia (con su epoch/ms)
 static Weighing logAppend(float peso, float precio, float total, uint32_t ms) {
   long ep = nowEpoch();
@@ -284,15 +405,25 @@ static Weighing logAppend(float peso, float precio, float total, uint32_t ms) {
   g_log[slot].bin    = curBin;
   g_latched = peso;
   if (haveP) g_sumAll += peso;                // suma acumulada (total de TODA la sesion)
+  aggAdd(curBin, curMalla, peso);             // subtotales de grupo sobre todo el historial
+  g_alive++;
   w = g_log[slot];
   portEXIT_CRITICAL(&g_mux);
   persistSlot(slot);
   persistGroups();
+  // al archivo permanente en lotes: asi hay pocas escrituras a flash.  Mientras
+  // tanto el pesaje ya esta a salvo en el buffer (NVS).
+  if (histWritable() && (uint32_t)(w.id - histLastId()) >= HIST_BATCH) archiveFlushPending();
   return w;
 }
 
 // ------------------------------- API lectura ------------------------------
-void weighBegin() { persistLoad(); }
+void weighBegin() {
+  persistLoad();          // buffer + contadores desde NVS
+  archiveBoot();          // monta el archivo permanente (si se puede)
+  rebuildTotals();        // nº de muestras y subtotales sobre TODO el historial
+  archiveFlushPending();  // lo del buffer que aun no estaba en el archivo
+}
 
 const char* weighStateName() {
   switch (g_state) { case WS_RISING: return "estabilizando";
@@ -337,14 +468,10 @@ uint32_t weighTotal() {
 }
 
 int weighCount() {
-  int n = 0;
   portENTER_CRITICAL(&g_mux);
-  for (int k = 0; k < g_count; k++) {
-    int idx = (g_head - 1 - k + WEIGH_LOG_SIZE * 2) % WEIGH_LOG_SIZE;
-    if (g_log[idx].epoch != -1) n++;             // no cuenta las filas borradas
-  }
+  uint32_t n = g_alive;                          // todo el historial, no solo el buffer
   portEXIT_CRITICAL(&g_mux);
-  return n;
+  return (int)n;
 }
 
 int weighGet(Weighing* out, int maxn) {
@@ -371,23 +498,32 @@ bool weighDeleteOne(uint32_t id) {
   }
   if (target >= 0) {
     if (!isnan(g_log[target].peso)) g_sumAll -= g_log[target].peso;
+    aggSub(g_log[target].bin, g_log[target].malla, g_log[target].peso);
+    if (g_alive > 0) g_alive--;
     g_log[target].epoch = -1;                    // marca de borrada
     relatch();
   }
   portEXIT_CRITICAL(&g_mux);
-  if (target >= 0) { persistSlot(target); Serial.printf("[web] fila #%lu borrada\n", (unsigned long)id); }
+  if (target >= 0) {
+    persistSlot(target);
+    if (id <= histLastId()) histMarkDeleted(id); // ya estaba en el archivo: se marca como borrado
+    Serial.printf("[web] fila #%lu borrada\n", (unsigned long)id);
+  }
   return target >= 0;
 }
 
 void weighClear() {
   portENTER_CRITICAL(&g_mux);
   g_count = 0; g_head = 0; g_total = 0; g_latched = NAN; g_sumAll = 0;
+  g_aggN = 0; g_alive = 0;
   g_mallaId = 1; g_binId = 1; g_mallaSum = 0; g_binSum = 0;
   g_mallaLast = NAN; g_binLast = NAN;
   // g_mallaTarget / g_binTarget NO se tocan: los objetivos puestos por el
   // operario se conservan aunque se borre todo el historial.
   portEXIT_CRITICAL(&g_mux);
   smReset();
+  histClear();        // primero el archivo permanente: si se corta la luz a medias, en el peor caso
+                      // reaparecen las ultimas WEIGH_LOG_SIZE filas del buffer, no todo el historial
   persistClear();     // borra TODO el namespace NVS...
   persistGroups();    // ...asi que hay que volver a guardar objetivos/ids ya mismo
 }
@@ -409,6 +545,58 @@ void weighSetTargets(float mallaTarget, float binTarget) {
   g_binTarget   = (binTarget   > 0) ? binTarget   : 0;
   portEXIT_CRITICAL(&g_mux);
   persistGroups();
+}
+
+// ---------------- historial completo (archivo + buffer) ----------------
+struct AllCtx { WeighVisit cb; void* ctx; bool stop; };
+
+static bool allVisit(const HRec& r, void* p) {
+  AllCtx* a = (AllCtx*)p;
+  Weighing w;
+  w.peso = r.peso; w.precio = r.precio; w.total = r.total;
+  w.ms = 0; w.epoch = r.epoch; w.id = r.id;
+  w.malla = r.malla; w.bin = r.bin;
+  if (!a->cb(w, a->ctx)) { a->stop = true; return false; }
+  return true;
+}
+
+void weighForEachAll(WeighVisit cb, void* ctx) {
+  AllCtx a = { cb, ctx, false };
+  histForEach(allVisit, &a);                     // 1) lo archivado, del mas viejo al mas nuevo
+  if (a.stop) return;
+  uint32_t lastId = histLastId();                // 2) lo del buffer que aun no esta en el archivo
+  Weighing* w = (Weighing*)malloc(sizeof(Weighing) * WEIGH_LOG_SIZE);
+  if (!w) return;
+  int n = weighGet(w, WEIGH_LOG_SIZE);           // reciente primero, sin borrados, con id
+  for (int i = n - 1; i >= 0; i--)
+    if (w[i].id > lastId && !cb(w[i], ctx)) break;
+  free(w);
+}
+
+bool weighGroupSum(uint16_t bin, uint16_t malla, float* sum, uint32_t* cnt) {
+  bool ok = false;
+  portENTER_CRITICAL(&g_mux);
+  GAgg* g = aggFind(bin, malla);
+  if (g) { *sum = (float)g->sum; *cnt = g->cnt; ok = true; }
+  portEXIT_CRITICAL(&g_mux);
+  return ok;
+}
+
+bool weighBinSum(uint16_t bin, float* sum, uint32_t* cnt) {
+  double s = 0; uint32_t c = 0; bool ok = false;
+  portENTER_CRITICAL(&g_mux);
+  for (int i = 0; i < g_aggN; i++)
+    if (g_agg[i].bin == bin) { s += g_agg[i].sum; c += g_agg[i].cnt; ok = true; }
+  portEXIT_CRITICAL(&g_mux);
+  if (ok) { *sum = (float)s; *cnt = c; }
+  return ok;
+}
+
+void weighArchiveInfo(WeighArchiveInfo* out) {
+  out->ok     = histWritable();
+  out->full   = histFull();
+  out->pct    = histUsedPct();
+  out->stored = histCount();
 }
 
 // ===========================================================================

@@ -48,9 +48,14 @@
  *     PSRAM:              "Disabled" (no se usa: la camara/OCR esta apagada,
  *                          que era lo unico que la necesitaba) o "QSPI PSRAM"
  *     Flash Size:         "4MB (32Mb)"
- *     Partition Scheme:   cualquiera pensado para 4MB, p.ej. "Minimal SPIFFS
- *                          (1.9MB APP/190KB SPIFFS)" -- confirma que el
- *                          binario compilado entra en el espacio disponible.
+ *     Partition Scheme:   uno pensado para 4MB que INCLUYA SPIFFS: ahi
+ *                          (LittleFS) se guarda el historial COMPLETO de
+ *                          pesajes (histarch.cpp); sin esa particion el
+ *                          programa funciona igual, pero solo conserva los
+ *                          ultimos 120.  El binario ocupa ~1,1 MB (no hay
+ *                          OTA).  Pesajes que caben: "Minimal SPIFFS" (128KB)
+ *                          ~4 000 · "Huge APP" (896KB) ~28 000 · "No OTA
+ *                          (2MB APP/2MB SPIFFS)" ~61 000 (recomendado).
  *     USB CDC On Boot:    "Enabled"  (esta placa NO tiene CH340 -- solo el
  *                          USB-C nativo; si lo dejas en Disabled no vas a ver
  *                          NADA en el Monitor Serie)
