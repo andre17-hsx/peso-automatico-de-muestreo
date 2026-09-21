@@ -815,16 +815,15 @@ static void handleWeighings() {
 static void handleWeighingsCsv() {
   Weighing* w = (Weighing*)malloc(sizeof(Weighing) * WEIGH_LOG_SIZE);
   if (!w) { S->send(500, "text/plain", "sin memoria"); return; }
-  int n = weighGet(w, WEIGH_LOG_SIZE);
-  uint32_t now = millis();
+  int n = weighGet(w, WEIGH_LOG_SIZE);            // reciente primero
 
   S->sendHeader("Content-Disposition", "attachment; filename=pesajes.csv");
   S->sendHeader("Cache-Control", "no-store");
   S->setContentLength(CONTENT_LENGTH_UNKNOWN);
   S->send(200, "text/csv", "");
-  S->sendContent("n;peso;precio_unit;total;malla;bin;hora_local;hace_s;sector;piscina\n");
+  S->sendContent("n;peso;precio_unit;total;malla;bin;hora_local;sector;piscina\n");
   String row; row.reserve(256);
-  for (int i = 0; i < n; i++) {
+  for (int i = n - 1; i >= 0; i--) {                 // del mas viejo (nº 1) al mas nuevo (nº n)
     char ts[24]; isoLocal(w[i].epoch, ts, sizeof(ts));
     row  = String(n - i);  row += ';';                 // nº = posicion (contiguo)
     row += String(w[i].peso, 2);   row += ';';
@@ -833,7 +832,6 @@ static void handleWeighingsCsv() {
     row += String(w[i].malla); row += ';';
     row += String(w[i].bin);   row += ';';
     row += ts; row += ';';
-    row += (w[i].ms ? String((now - w[i].ms) / 1000) : String("")); row += ';';
     row += g_sector;  row += ';';                      // de la jornada: valor actual al exportar
     row += g_piscina; row += '\n';
     S->sendContent(row);

@@ -221,8 +221,9 @@ enlaces a `/config` y `/sniffer`), que sigue disponible entrando a esas rutas di
   el `#` se renumera sin huecos.
 - Botón **Borrar todo** → tira de confirmación (Cancelar / Sí, borrar). También
   `GET/POST /weighings/clear`.
-- **`/weighings.csv`**: descarga el historial con las columnas
-  `n;peso;precio_unit;total;malla;bin;hora_local;hace_s;sector;piscina`. En el panel,
+- **`/weighings.csv`**: descarga el historial ordenado del pesaje **1 al n** (del más
+  antiguo al más reciente) con las columnas
+  `n;peso;precio_unit;total;malla;bin;hora_local;sector;piscina`. En el panel,
   **"Copiar CSV"** lo pone en el portapapeles (útil en iPhone, donde la ventanita
   automática de la red no deja descargar archivos — para el archivo, abre Safari y entra
   a `192.168.4.1`).
