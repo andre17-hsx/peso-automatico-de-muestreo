@@ -1,7 +1,12 @@
-# peso_balanza_cam — ESP32-S3: OCR con cámara y/o sniffer del bus + web
+# peso_balanza_cam — ESP32-S3: sniffer del bus de la balanza + panel web
 
-Lee el **PESO** de la balanza cuenta-precio por **cámara**, por **sniffer del bus
-del display**, o por **los dos a la vez** (para compararlos), y lo publica por WiFi.
+Lee **PESO, PRECIO y TOTAL** de la balanza cuenta-precio **escuchando de forma pasiva
+el bus del display** (sniffer), guarda cada pesaje, los agrupa en **mallas y BIN** con
+alertas para el operario, y lo publica por WiFi en un **panel web** (la propia placa
+crea la red; no hace falta router ni internet).
+
+Opcionalmente, y desactivado por defecto, también puede leer el display **con una
+cámara** (OCR) — ver la sección 5. Ese método necesita una placa con conector de cámara.
 
 Placa: **ESP32-S3 Super Mini** (chip ESP32-S3FH4R2: 4 MB flash + 2 MB PSRAM Quad,
 un solo USB-C nativo, sin CH340). Antes se usaba un ESP32-S3-WROOM (N16R8) con
@@ -13,18 +18,20 @@ conector FFC de cámara y doble USB-C; se cambió de módulo por daño de hardwa
 ## 1. Elegir el método — `config.h`
 
 ```c
-#define ENABLE_OCR       1     // leer el display con la cámara
-#define ENABLE_SNIFFER   0     // escuchar el bus DA/SL del display
-#define OCR_AUTO         1     // 1 = localiza los dígitos solo (sin encuadrar)
+#define ENABLE_OCR       0     // (opcional) leer el display con la cámara
+#define ENABLE_SNIFFER   1     // escuchar el bus DA/SL del display  ← lo que se usa
 ```
 
 | OCR | SNIFFER | resultado |
 |:---:|:---:|---|
-| 1 | 0 | **solo cámara** — no hay que soldar ni abrir la balanza *(empieza por aquí)* |
-| 0 | 1 | solo sniffer del bus |
+| 0 | 1 | **solo sniffer del bus** *(configuración actual)* |
+| 1 | 0 | solo cámara — no hay que soldar ni abrir la balanza, pero exige una placa con conector de cámara (la Super Mini no lo tiene) |
 | 1 | 1 | los dos; el panel web los compara |
 
 Lo desactivado **no se compila** (ni reserva pines ni RAM).
+
+`config.h` lleva las claves WiFi y **no está en el repositorio**: copia
+`config.example.h` a `config.h` y pon tus claves antes de compilar.
 
 ---
 
@@ -38,18 +45,21 @@ Lo desactivado **no se compila** (ni reserva pines ni RAM).
 - USB CDC On Boot: **`Enabled`** — esta placa NO tiene CH340, es un solo
   USB-C nativo; con `Disabled` no sale nada por el Monitor Serie
 - Monitor Serie **115200** → sale la IP / la red creada.
+- Si el puerto COM aparece y desaparece al conectar (típico de una placa nueva con el
+  firmware de fábrica), **mantén presionado BOOT mientras conectas el USB**, suéltalo a
+  los 2-3 s y sube el sketch; después ya arranca estable.
 
 ### WiFi — `config.h`
 
 ```c
-#define WIFI_MODE  2     // 0 = SOLO AP (campo) · 1 = SOLO router · 2 = AP + router
+#define WIFI_MODE  0     // 0 = SOLO AP (campo) · 1 = SOLO router · 2 = AP + router
 ```
 
 | Modo | Qué hace |
 |:---:|---|
-| **0** | El ESP **crea su red** `WIFI_AP_SSID` / `WIFI_AP_PASS`. Panel en **`http://192.168.4.1/`**. Para campo, sin router. |
+| **0** *(actual)* | El ESP **crea su red** `WIFI_AP_SSID` / `WIFI_AP_PASS`. Panel en **`http://192.168.4.1/`**. Para campo, sin router. |
 | 1 | Se une al router (`WIFI_SSID`/`WIFI_PASS`). Si no puede en 15 s y `WIFI_AP_FALLBACK 1`, crea su red. |
-| **2** *(def)* | Las dos: su red **siempre**, y además se une al router si lo ve (sin bloquear). Sirve para oficina y campo. |
+| 2 | Las dos: su red **siempre**, y además se une al router si lo ve (sin bloquear). Sirve para oficina. |
 
 **Portal cautivo** (`WIFI_CAPTIVE 1`): al conectar el móvil a la red del ESP, el
 sistema operativo abre solo el panel (como el login de un aeropuerto). Lo hace un
@@ -61,11 +71,18 @@ Sin internet no hay NTP: el **móvil del operario pone la hora** al abrir el pan
 (`/settime`), así el historial lleva hora real. Si tampoco, queda el orden y
 "hace N s" de la sesión.
 
-### Pines de la cámara
+**Recuperación automática del AP** (modos 0 y 2): si el driver de WiFi detiene la red
+propia (evento `AP_STOP`, o el modo deja de ser AP), el firmware la vuelve a levantar
+solo. Ignora los avisos de los primeros 5 s tras levantarla (`AP_GRACE_MS`), que son
+ruido del arranque. El contador `APrec` del latido por Serial cuenta las recuperaciones
+reales: en funcionamiento normal debe quedar en **0**.
+
+### Pines de la cámara (solo si `ENABLE_OCR 1`)
 
 `config.h` trae el pinout **ESP32-S3-EYE** (el que copian casi todas las placas
 "ESP32-S3-WROOM CAM"). Si al arrancar sale `esp_camera_init fallo 0x...`, busca el
-pinout exacto de tu placa y corrige los `CAM_PIN_*`.
+pinout exacto de tu placa y corrige los `CAM_PIN_*`. Con el sniffer activo y el OCR
+apagado, esos pines no se usan.
 
 ### Pines del sniffer (solo si `ENABLE_SNIFFER 1`)
 
@@ -75,15 +92,35 @@ pinout exacto de tu placa y corrige los `CAM_PIN_*`.
 | `DA` | `— [470 Ω] — [diodo Schottky] —` | `GPIO4` |
 | `GND` | `———` | `GND` (masa común **obligatoria**) |
 
-DA lleva además un **diodo Schottky** en serie (ánodo hacia la balanza, cátodo
-hacia el GPIO) — protege contra una fuga interna del ESP devolviéndose hacia el
-bus de la balanza (así se descubrió que el módulo WROOM anterior tenía 2 GPIO
-con fuga hacia el riel de 5V, y terminó reemplazándose).
+DA lleva además un **diodo Schottky** en serie (BAT54 / 1N5817 / 1N5819; ánodo hacia la
+balanza, cátodo hacia el GPIO) — protege contra una fuga interna del ESP devolviéndose
+hacia el bus de la balanza (así se descubrió que el módulo WROOM anterior tenía 2 GPIO
+con fuga hacia el riel de 5V, y terminó reemplazándose). Usa Schottky y no un diodo de
+silicio: la lógica es de ~3 V y los 0,6 V de un 1N4148 dejarían el nivel alto demasiado
+justo.
 
 No conectar `VCC_DIS`. `GPIO1` y `GPIO4` están limpios en esta placa; **no
 `GPIO2`** (tiene el LED "ON" de la placa, que carga la línea). Evitar UART0
 (`43/44`), USB nativo (`19/20`) y strapping S3 (`0/3/45/46`) — son del silicio,
 valen para cualquier placa. El ISR lee `GPIO_IN_REG` → usa pines ≤ 31.
+
+### Alimentación y montaje
+
+- **La carcasa metálica de la balanza bloquea el WiFi** (jaula de Faraday): con la
+  placa dentro y la tapa cerrada la red no aparece. El ESP32-S3 va en una **caja de
+  plástico externa**, con solo los 3 cables del sniffer más la alimentación.
+- Alimentación prevista desde la **batería de la propia balanza** (~4,2 V a plena carga,
+  una celda de Li-ion): un convertidor **buck-boost** (TPS63020 / TPS63802, no un buck
+  simple, porque la celda baja por debajo de 3,3 V al descargarse) ajustado a **3,3 V** y
+  conectado al pin **`3V3`** de la placa.
+- **No conectes nada a `BATTERY+` / `BATTERY-`** de la Super Mini: tiene su propio
+  cargador de batería y no debe pelearse con el de la balanza.
+- Recomendado un condensador de salida (electrolítico 220–470 µF + cerámico 100 nF) lo
+  más cerca posible del pin `3V3`: los picos de corriente del WiFi (~0,4–0,5 A) son más
+  rápidos de lo que responde el regulador.
+- Consumo de referencia con el WiFi siempre activo (el firmware no duerme): ~150–250 mA
+  de media → la autonomía en horas ≈ mAh de la batería ÷ mA. Es una estimación, no una
+  medición; conviene medirla en la placa real.
 
 ---
 
@@ -95,7 +132,7 @@ valen para cualquier placa. El ISR lee `GPIO_IN_REG` → usa pines ≤ 31.
  VACIA ──(peso > WEIGH_ZERO_THRESH)──▶ CON CARGA
  CON CARGA (mientras el peso esté ESTABLE se RECUERDA su valor)
    └─ la plataforma cae por debajo del umbral ──▶ CONFIRMANDO (~WEIGH_CONFIRM_MS)
-        · el peso BAJÓ de verdad (pasó por valores WEIGH_PARTIAL kg menores, o
+        · el peso BAJÓ de verdad (pasó por valores WEIGH_PARTIAL menores, o
           < WEIGH_PARTIAL_FRAC del estable si el neto es pequeño; con carga aún
           presente) ──────────────────────────────▶ se GUARDA  + weighOnCommit
         · salto LIMPIO a 0  ó  plataforma en NEGATIVO ──▶ es una TARA, NO se guarda
@@ -115,70 +152,102 @@ valen para cualquier placa. El ISR lee `GPIO_IN_REG` → usa pines ≤ 31.
 - Monitor Serie: `[pesaje] carga detectada...` · `[pesaje] retirado -> GUARDADO
   PESO 1.30 ...` · `[pesaje] TARA (...) -> pendiente descartado`.
 
-Ajustes en `config.h`:
+Ajustes en `config.h` (los números son **absolutos, en la unidad de la balanza**: el
+firmware no convierte nada, así que la balanza debe estar en **libras**):
 
 | Parámetro | Qué es | Por defecto |
 |---|---|---|
-| `WEIGH_ZERO_THRESH` | kg por debajo = plataforma vacía | `0.10` |
+| `WEIGH_ZERO_THRESH` | por debajo = plataforma vacía | `0.06` |
 | `WEIGH_CONFIRM_MS` | tiempo de comprobación "¿retiro o tara?" antes de guardar | `1000` |
-| `WEIGH_PARTIAL` | cuánto (kg) tiene que bajar el peso con carga para contar como retiro real | `0.15` |
+| `WEIGH_PARTIAL` | cuánto tiene que bajar el peso con carga para contar como retiro real | `0.085` |
 | `WEIGH_PARTIAL_FRAC` | …o a qué fracción del valor estable (para netos pequeños con tara) | `0.55` |
 | `WEIGH_ZERO_MS` | cuánto dura el negativo para confirmar una tara | `400` |
 | `WEIGH_STABLE_MS` | (solo OCR) número quieto → "estable" | `700` |
 | `WEIGH_INVALID_MS` | display apagado este tiempo → cierra | `2500` |
 | `WEIGH_LOG_SIZE` | pesajes que guarda en memoria/NVS | `120` |
 | `WEIGH_V2` | `0` = comportamiento anterior a la ronda ag (sin rebote/anti-meneo/commit rápido) | `1` |
-| `WEIGH_DIP` | el neto rebota a menos de `-esto` al retirar de verdad (la celda rebota; una tara nunca baja de 0) | `0.12` |
+| `WEIGH_DIP` | el neto rebota a menos de `-esto` al retirar de verdad (la celda rebota; una tara nunca baja de 0) | `0.05` |
 | `WEIGH_SETTLE_MS` | con señal de retiro, guarda a los ~350 ms en vez de `WEIGH_CONFIRM_MS` | `350` |
 | `WEIGH_FEED_MS` | cada cuánto se alimenta la máquina de estados (más muestras = pilla mejor el retiro rápido) | `20` |
 
 Si un pesaje real se sigue perdiendo, mira el Monitor Serie: la línea
 `cero limpio (dip X.XX) sin descarga` dice cuánto rebotó — baja `WEIGH_DIP`
 hacia ese valor. Si alguna **tara** se cuela, súbelo. Para volver del todo al
-comportamiento anterior: `WEIGH_V2 0`, o restaura `_backup_pre_ag/`.
+comportamiento anterior: `WEIGH_V2 0`.
 
-- Panel `/`, pensado para el operario (orden fijo): **pantalla LED** (PESO
-  grande, PRECIO UNITARIO e IMPORTE TOTAL debajo) + indicador ESTABLE →
-  **objetivos "malla" / "BIN"** (dos campos donde el operario escribe un peso
-  en lb; se alerta — color, vibración y pitido — en cuanto la lectura **en
-  vivo** o el acumulado lo **igualan o superan**; el valor se recuerda en el
-  navegador) → **último pesaje guardado** → **peso total acumulado** (suma de
-  todos los pesajes desde el último *Borrar*, sobrevive a reinicios). El
-  historial completo (lista deslizable, CSV, Borrar) queda plegado bajo
-  **"Historial"**; ahí ya no se muestra info técnica (bus/WiFi/RSSI, enlaces a
-  `/config` y `/sniffer`) — sigue disponible entrando a esas rutas directo.
-  Estilo *glassmorphism*; botón sol/luna arriba a la derecha para **modo claro
-  / oscuro** (se recuerda en el navegador). Sin fuentes web ni librerías —
-  funciona sin internet.
-- Cada pesaje guarda los **3 campos**: `peso`, `precio unitario`, `total`
-  (el precio/total tal como los mostraba la balanza al estabilizarse el peso).
-- **`/weighings.csv`**: descarga el historial (`n;peso;precio_unit;total;hora_local;hace_s`).
-  En el panel, **"Copiar CSV"** lo pone en el portapapeles (útil en iPhone, donde
-  la ventanita automática de la red no deja descargar archivos — para el archivo,
-  abre Safari y entra a `192.168.4.1`).
-- Cada fila del historial se **borra deslizándola** hacia la izquierda. El `#`
-  de las filas se **renumera** (sin huecos) y el contador se ajusta al instante.
-  `GET /weighings/del?id=N`.
-- Botón **Borrar todo** → tira de confirmación (Cancelar / Sí, borrar) que
-  aparece debajo sin mover el resto. También `GET/POST /weighings/clear`.
-- El panel muestra **lb**. El firmware no convierte: el número es el que muestra
-  la balanza → **ponla en libras**. Los umbrales `WEIGH_*` (`0.10`, `0.15`,
-  `WEIGH_DIP 0.12`) son números absolutos; se interpretan en la unidad de la
-  balanza (ahora libras).
-- **El historial se guarda en NVS** (`WEIGH_PERSIST 1`): sobrevive a apagones /
-  cambio de batería. Últimos `WEIGH_LOG_SIZE` (120). Al reiniciar se recarga y
-  el Monitor Serie dice `historial cargado de NVS: N`.
-- `weighOnCommit(cb)` en `weighlog.h`: gancho para el **envío al servidor**
-  (pendiente) — salta 1 vez al confirmarse cada pesaje, con los 3 campos.
+### Mallas y BIN
+
+El operario escribe en el panel el peso objetivo de una **malla** y de un **BIN** (en
+lb). La estructura es: **cada BIN contiene varias mallas, y cada malla varios pesajes**.
+
+- Cada pesaje se suma **completo** (una gaveta es un solo objeto, nunca se reparte) al
+  acumulado de la malla en curso y al del BIN en curso.
+- Una **malla se cierra** cuando su acumulado **iguala o supera** el objetivo. Ese
+  pesaje es el último de esa malla, aunque se pase; el siguiente empieza otra desde 0.
+- Un **BIN se cierra** solo en el mismo pesaje en que se cierra una malla y su acumulado
+  iguala o supera el objetivo del BIN — así una malla nunca queda partida entre dos BIN.
+  Si no hay objetivo de malla, el BIN se evalúa en cada pesaje.
+- Los sobrantes **no se recortan ni se pasan al siguiente grupo**: si malla 1 se pasa por
+  *a*, malla 2 por *b* y malla 3 por *c*, el BIN se pasa por *a+b+c* y cierra igual.
+- **La malla se reinicia a 1 en cada BIN** (BIN 1: mallas 1, 2, 3… · BIN 2: mallas 1, 2…).
+- El **peso total acumulado** es aparte y no cambia: sigue siendo la suma de toda la sesión.
+- Objetivo en `0` o vacío = ese nivel no cierra grupos.
+- Los objetivos, las etiquetas de malla/BIN de cada pesaje y los contadores se guardan en
+  NVS (sobreviven a apagones). **Borrar todo** vuelve a BIN 1 / Malla 1 pero conserva los
+  objetivos.
+
+Limitación conocida: **borrar una fila suelta** del historial ajusta el peso total
+acumulado, pero **no** reajusta los acumulados de la malla/BIN en curso ni reabre grupos
+ya cerrados.
+
+### Panel `/` (para el operario)
+
+Orden fijo: **pantalla LED** (PESO grande, PRECIO UNITARIO e IMPORTE TOTAL debajo) +
+indicador ESTABLE → **Nombre de sector** y **Número de piscina** → **objetivos "malla" /
+"BIN"** → **último pesaje guardado** → **peso total acumulado**. El historial completo
+queda plegado bajo **"Historial"**; ahí ya no se muestra info técnica (bus/WiFi/RSSI,
+enlaces a `/config` y `/sniffer`), que sigue disponible entrando a esas rutas directo.
+
+- **Sector y piscina**: dos campos de texto que el operario rellena al empezar. Se guardan
+  en la placa (NVS), se ven igual desde cualquier móvil y sobreviven a reinicios y a
+  *Borrar todo*. Son datos de la **jornada**, no de cada pesaje: el CSV repite el valor que
+  haya en el momento de exportar.
+- **Objetivos malla / BIN**: cada tarjeta muestra el avance del grupo en curso
+  (`acumulado / objetivo · faltan X lb`). Al cerrarse un grupo sale un **pop-up** grande
+  con el total de esa malla/BIN, más pitido y vibración (un solo aviso, el del BIN, si
+  cierran los dos a la vez).
+- **Historial agrupado**: las filas van bajo cabeceras `BIN n` y `Malla m` con su
+  subtotal. Cada fila se **borra deslizándola** hacia la izquierda (`GET /weighings/del?id=N`);
+  el `#` se renumera sin huecos.
+- Botón **Borrar todo** → tira de confirmación (Cancelar / Sí, borrar). También
+  `GET/POST /weighings/clear`.
+- **`/weighings.csv`**: descarga el historial con las columnas
+  `n;peso;precio_unit;total;malla;bin;hora_local;hace_s;sector;piscina`. En el panel,
+  **"Copiar CSV"** lo pone en el portapapeles (útil en iPhone, donde la ventanita
+  automática de la red no deja descargar archivos — para el archivo, abre Safari y entra
+  a `192.168.4.1`).
+- Estilo *glassmorphism*; botón sol/luna arriba a la derecha para **modo claro / oscuro**
+  (se recuerda en el navegador). Sin fuentes web ni librerías — funciona sin internet.
+- Cada pesaje guarda los **3 campos**: `peso`, `precio unitario`, `total` (el precio/total
+  tal como los mostraba la balanza al estabilizarse el peso).
+- El panel muestra **lb**. Los umbrales `WEIGH_*` se interpretan en esa misma unidad.
+- **El historial se guarda en NVS** (`WEIGH_PERSIST 1`): sobrevive a apagones / cambio de
+  batería. Últimos `WEIGH_LOG_SIZE` (120). Al reiniciar se recarga y el Monitor Serie dice
+  `historial cargado de NVS: N`.
+- `weighOnCommit(cb)` en `weighlog.h`: gancho para el **envío a un servidor** (pendiente) —
+  salta 1 vez al confirmarse cada pesaje, con los 3 campos.
 
 ## 4. Rutas del servidor
 
 | Ruta | | Qué hace |
 |---|---|---|
 | `/` | | panel (se adapta a lo que esté activo) |
-| `/api` | | JSON estado en vivo |
+| `/api` | | JSON estado en vivo (incluye acumulados y objetivos de malla/BIN, sector, piscina) |
 | `/weighings` · `/weighings.csv` | | historial de pesajes (JSON / CSV) |
-| `/weighings/clear` | | borra el historial (RAM + NVS) |
+| `/weighings/del?id=N` | | borra una fila |
+| `/weighings/clear` | | borra el historial (RAM + NVS); conserva objetivos, sector y piscina |
+| `/targets?malla=200&bin=800` | | pone los objetivos en lb (`0` lo desactiva; si falta un parámetro, ese no cambia) |
+| `/info?sector=A&piscina=12` | | pone sector / piscina (vacío los borra; si falta un parámetro, ese no cambia) |
 | `/settime?epoch=…` | | el móvil le pasa la hora al ESP (sin internet) |
 | `/config` | | calibración OCR y/o mapa del sniffer (se guarda en NVS) |
 | `/snapshot.jpg` · `/ocr_debug.jpg` | OCR | foto actual / con las zonas dibujadas |
@@ -186,7 +255,7 @@ comportamiento anterior: `WEIGH_V2 0`, o restaura `_backup_pre_ag/`.
 
 ---
 
-## 5. Puesta a punto del OCR
+## 5. Puesta a punto del OCR (solo si `ENABLE_OCR 1`)
 
 Por defecto va en **modo automático** (`auto=1`): **no hay que encuadrar nada**.
 Cada frame (5×/s) localiza la **banda** de brillo (los LEDs sobre negro) y el
@@ -245,10 +314,10 @@ pon **`brillo ON`** (`abr` en `/config`, o `OCR_AUTO_BRIGHT` en `config.h`) a
 
 ---
 
-## 6. Sniffer del bus (método alternativo, sin cámara)
+## 6. Sniffer del bus
 
-En `config.h`: `#define ENABLE_SNIFFER 1` (puedes dejar `ENABLE_OCR 1` a la vez
-para comparar). Cablea:
+En `config.h`: `#define ENABLE_SNIFFER 1` (y `ENABLE_OCR 0`; los dos a la vez solo si
+tienes cámara y quieres compararlos). Cablea:
 
 | Balanza (conector DIS) | | ESP32-S3 |
 |---|---|---|
@@ -289,8 +358,17 @@ sección **"0. Diagnóstico de cableado"**:
 - Comprueba: **masa común** (multímetro en continuidad entre `GND` del ESP32 y
   `GND` de la balanza), resistencias de **470 Ω** (amarillo-violeta-**marrón**,
   no 470 k), y el pad correcto en el conector de la placa de display
-  (`DIN`/`CLK`, a veces `SDA`/`SCL` o `DA`/`SL`). Puedes puentear directo sin
-  resistencia para descartarlas (3 V y misma masa → es seguro para el GPIO).
+  (`DIN`/`CLK`, a veces `SDA`/`SCL` o `DA`/`SL`). **No puentees la resistencia ni el
+  diodo** para "descartarlos": son lo que protege al GPIO y al bus de la balanza.
+
+### Si la balanza se descontrola al conectar DA
+
+Si al conectar el cable de DA los LEDs de la balanza parpadean o la pantalla se apaga, el
+ESP está **cargando el bus** en vez de solo escucharlo. Con todo apagado, mide con el
+multímetro entre cada GPIO usado y los pines `5V` / `3V3` / `GND` del ESP: no debe haber
+continuidad ni una lectura de unos pocos mV. Si la hay, ese pin (o el módulo) está dañado;
+el diodo Schottky en DA contiene el problema, pero lo correcto es cambiar de pin o de
+módulo.
 
 ### Si el mapa se descuadra (dígitos que faltan, PRECIO/TOTAL en blanco…)
 
@@ -298,7 +376,8 @@ El mapa `SNIF_*_ADDR` de `config.h` vale para la `ACS-JC36CV28`. Si un
 **"Resolver mapa"** salió mal, quedó guardado en NVS y pisa al de `config.h`.
 Arreglo:
 
-- **Botón "Restaurar mapa por defecto"** en `/sniffer` → borra el de NVS.
+- **Botón "Restaurar mapa por defecto"** en `/sniffer` → borra el de NVS (solo el mapa
+  del sniffer; no toca el historial ni los objetivos).
 - O sube `SNIF_MAP_VERSION` en `config.h` y reflashea → se borra solo.
 - La línea `mapa PESO[…] PRECIO[…] TOTAL[…]` de `/sniffer` muestra el que hay.
 
@@ -324,18 +403,33 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
 
 | Fichero | Contenido |
 |---|---|
-| `peso_balanza_cam.ino` | setup/loop, WiFi, portal cautivo, orquestación |
-| `config.h` | **todo lo ajustable**: modo, WiFi, TZ, mapa sniffer |
+| `peso_balanza_cam.ino` | setup/loop, WiFi, portal cautivo, recuperación del AP, orquestación |
+| `config.example.h` | plantilla de configuración con claves de ejemplo → copiar a `config.h` |
+| `config.h` | **todo lo ajustable**: modo, WiFi, TZ, pines y mapa del sniffer, umbrales (no se versiona) |
 | `seg7.h` | tabla de 7 segmentos (compartida) |
-| `weighlog.h/.cpp` | máquina de estados del pesaje + historial (común) |
+| `weighlog.h/.cpp` | máquina de estados del pesaje + historial + agrupación malla/BIN (NVS) |
 | `ocr7seg.h/.cpp` | cámara + análisis de segmentos (solo si `ENABLE_OCR`) |
 | `sniffer_tm1640.h/.cpp` | ISR del bus DA/SL + TM1640 (solo si `ENABLE_SNIFFER`) |
 | `web_ui.h/.cpp` | servidor web y páginas |
 
-## 8. Notas
+## 8. Notas y problemas conocidos
 
+- **Latido por Serial** (cada 5 s): `[hb] BUS valid… pesaje:… heap:libre(min …) APcli:N
+  APrec:N`. `heap min` no debe bajar de forma sostenida; `APrec` debe quedarse en 0. El
+  `rssi` sale siempre **0** en modo AP (mide el enlace como cliente, que no existe): para
+  el alcance usa el indicador de señal del móvil.
+- **"waiting for download" en el Monitor Serie**: el chip arrancó en modo descarga porque
+  `GPIO0` (botón BOOT) estaba en bajo al encender o resetear, así que no corre tu programa.
+  Apaga y enciende **sin tocar BOOT**. Si algo lo aprieta (la caja, un cable, humedad),
+  quítalo o cubre el botón. Solo se lee en el arranque; con el programa corriendo, BOOT no
+  hace nada.
+- **El banner de la red a veces no sale en el Monitor Serie** (con el USB nativo, el
+  inicio del log puede perderse al resetear). No significa que la red no exista: míralo en
+  la lista WiFi del móvil.
+- **La red desaparece con la caja cerrada**: ver *Alimentación y montaje* (sección 2).
 - Si la placa se reinicia al conectar la WiFi (brownout), aliméntala por un
   USB-C con buena corriente.
 - Con los dos métodos activos, si el bus se decodifica con basura pon
   `OCR_PAUSE_SNIFFER 1` en `config.h`.
-- El sniffer es de solo lectura y no perturba el bus.
+- El sniffer es de solo lectura y no perturba el bus, siempre que el cableado sea el de la
+  sección 2 (resistencia + diodo en DA).
