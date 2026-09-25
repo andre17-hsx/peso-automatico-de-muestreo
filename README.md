@@ -3,6 +3,27 @@
 Leer automáticamente el valor de una **balanza cuenta-precio** (placa `ACS-JC36CV28` +
 placa de display `WP-91110-2540-V7`, chip `CS2540`) y enviarlo a un sistema de muestreo.
 
+## Panel web
+
+El ESP crea su propia red WiFi y sirve un panel pensado para el móvil, sin internet ni apps:
+réplica de la pantalla LED de la balanza, historial agrupado por BIN y malla, exportación a CSV,
+modo claro/oscuro y avisos de estado.
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/panel-claro.png" width="250" alt="Panel en modo claro"><br><sub>Modo claro</sub></td>
+    <td align="center"><img src="docs/panel-oscuro.png" width="250" alt="Panel en modo oscuro"><br><sub>Modo oscuro</sub></td>
+    <td align="center"><img src="docs/panel-historial.png" width="250" alt="Historial agrupado por BIN y malla"><br><sub>Historial por BIN y malla</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/panel-malla-completada.png" width="250" alt="Aviso de malla completada"><br><sub>Aviso al completar una malla</sub></td>
+    <td align="center"><img src="docs/panel-sin-senal.png" width="250" alt="Aviso de SIN SEÑAL"><br><sub>Aviso de «SIN SEÑAL»</sub></td>
+    <td></td>
+  </tr>
+</table>
+
+<sub>Capturas con datos de ejemplo: el panel real alimentado por un ESP simulado, no son mediciones reales.</sub>
+
 ## Enfoque elegido: interceptar el bus del display
 
 La placa principal manda a la placa del display, por **2 hilos** (`DA` = datos, `SL` = reloj),
