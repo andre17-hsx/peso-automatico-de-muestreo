@@ -61,6 +61,15 @@ entiende el chip `CS2540` (familia TM1640):
 - La trama que importa empieza por `0xC0 | dirección` y sigue con **1 byte por dígito** (16 en
   total: la "RAM" del display). Los comandos de modo (`0x40`) y de brillo (`0x80…0x8F`) se ignoran.
 
+Una actualización del display, de un vistazo (el ESP solo escucha, no envía nada):
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/trama-oscuro.svg">
+    <img src="docs/trama-claro.svg" width="830" alt="Diagrama de la trama del bus SL/DA del display: START, comando 0xC0 con la dirección, 16 bytes (PESO 0 a 4, PRECIO 5 a 9, TOTAL 10 a 15) y STOP; cada byte se lee bit a bit en los flancos de subida de SL, y sus bits son los segmentos a-g y el punto de un dígito de 7 segmentos.">
+  </picture>
+</p>
+
 **Interceptar = escuchar sin tocar.** `SL` y `DA` entran a dos pines del ESP32 (con 470 Ω en
 serie, un diodo Schottky en `DA` y GND común) y el ESP **nunca escribe en el bus**. Dos
 interrupciones hacen todo el trabajo:
