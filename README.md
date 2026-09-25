@@ -114,3 +114,9 @@ Solo si no se puede interceptar el bus. ESP32-CAM S3 fijo frente al display,
 exposición bloqueada, recorte de ROI por dígito, CNN de 11 clases, validación
 por varios fotogramas. (`peso_balanza_cam/` ya incluye un OCR clásico de 7 segmentos,
 sin TinyML, desactivado por defecto: `ENABLE_OCR 0`.)
+
+## Licencia
+
+Código publicado **solo para consulta y como muestra de trabajo (portafolio)**. Todos los derechos
+reservados: no se permite copiarlo, modificarlo, redistribuirlo, venderlo ni usarlo en otros
+proyectos sin autorización por escrito. Detalles en [`LICENSE`](LICENSE).
