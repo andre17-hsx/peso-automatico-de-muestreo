@@ -154,8 +154,9 @@ valen para cualquier placa. El ISR lee `GPIO_IN_REG` → usa pines ≤ 31.
 - Re-tarar a mitad de sesión funciona solo: ese salto a 0 se ignora, las
   siguientes gavetas se guardan normal.
 - "Estable" = **captura por ventana tolerante** (`WEIGH_PLATEAU 1`, ver abajo). Con OCR se
-  usa "número quieto `WEIGH_STABLE_MS`". El punto verde del panel sigue siendo el bit
-  ESTABLE del propio bus: es solo visual y ya no decide qué valor se guarda.
+  usa "número quieto `WEIGH_STABLE_MS`". El punto verde del panel lo calcula el sniffer
+  (el PESO lleva `SNIF_STABLE_N` = 4 refrescos seguidos igual; no viene en el bus): es solo
+  visual y ya no decide qué valor se guarda.
 - **PRECIO y TOTAL** se toman en cada muestra estable (si re-tecleas el precio con
   el peso puesto, se guarda el precio **nuevo**).
 - Monitor Serie: `[pesaje] carga detectada...` · `[pesaje] retirado -> GUARDADO
@@ -179,7 +180,7 @@ firmware no convierte nada, así que la balanza debe estar en **libras**):
 | `WEIGH_DIP` | el neto rebota a menos de `-esto` al retirar de verdad (la celda rebota; una tara nunca baja de 0) | `0.05` |
 | `WEIGH_SETTLE_MS` | con señal de retiro, guarda a los ~350 ms en vez de `WEIGH_CONFIRM_MS` | `350` |
 | `WEIGH_FEED_MS` | cada cuánto se alimenta la máquina de estados (más muestras = pilla mejor el retiro rápido) | `20` |
-| `WEIGH_PLATEAU` | `1` = captura por ventana tolerante (abajo); `0` = criterio anterior (quieto 250 ms + bit ESTABLE del bus) | `1` |
+| `WEIGH_PLATEAU` | `1` = captura por ventana tolerante (abajo); `0` = criterio anterior (quieto 250 ms + "estable" del sniffer) | `1` |
 | `WEIGH_WIN_MS` | ventana en la que las lecturas deben variar poco para dar un valor por asentado | `250` |
 | `WEIGH_BAND` | cuánto puede variar el peso dentro de esa ventana (el escurrido, ~0,1 lb/s, cabe de sobra) | `0.15` |
 | `WEIGH_TOL_ABS` / `WEIGH_TOL_PCT` | tras el primer valor asentado solo se aceptan otros a menos de `max(TOL_ABS, TOL_PCT %)` de él | `1.0` / `3.0` |
@@ -187,7 +188,7 @@ firmware no convierte nada, así que la balanza debe estar en **libras**):
 | `DIAG_LOG` | `1` = registro de diagnóstico `/log` (ver sección 8); `0` = desactivado | `1` |
 
 **Captura por ventana tolerante (`WEIGH_PLATEAU 1`).** El criterio anterior exigía que el
-número estuviera *quieto* 250 ms y coincidiera con el bit ESTABLE del bus; con el escurrido
+número estuviera *quieto* 250 ms y coincidiera con el "estable" del sniffer; con el escurrido
 del producto (el peso baja ~0,1 lb/s) o una gaveta que se apoya con rebote, muchas veces
 no se cumplía en los ~2 s que la gaveta está en la balanza y el pesaje se perdía. Ahora:
 

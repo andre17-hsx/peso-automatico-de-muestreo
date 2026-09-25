@@ -49,6 +49,51 @@ No hace falta analizador lógico: un **ESP32 / ESP32-S3** hace de sniffer.
 
 ## Fase 1 — Ingeniería inversa del protocolo (sketch `sniffer_tm1640/`)
 
+### Cómo se intercepta y se decodifica
+
+Los números de la balanza son **LED de 7 segmentos**. La placa principal no le manda al display
+el número "41.30", sino **qué segmentos encender en cada dígito**, por un bus de 2 hilos que
+entiende el chip `CS2540` (familia TM1640):
+
+- `SL` = reloj: cada bit vale en el **flanco de subida** de `SL`. `DA` = datos: 8 bits por byte,
+  **primero el menos significativo**.
+- **START** = `DA` baja con `SL` alto · **STOP** = `DA` sube con `SL` alto (como I²C, pero sin ACK).
+- La trama que importa empieza por `0xC0 | dirección` y sigue con **1 byte por dígito** (16 en
+  total: la "RAM" del display). Los comandos de modo (`0x40`) y de brillo (`0x80…0x8F`) se ignoran.
+
+**Interceptar = escuchar sin tocar.** `SL` y `DA` entran a dos pines del ESP32 (con 470 Ω en
+serie, un diodo Schottky en `DA` y GND común) y el ESP **nunca escribe en el bus**. Dos
+interrupciones hacen todo el trabajo:
+
+1. **Flanco de subida de `SL`** → lee `DA` y va armando el byte bit a bit.
+2. **Cambio de `DA` con `SL` alto** → START (empieza una trama) o STOP (la cierra y copia sus
+   bytes a una RAM espejo de 16 bytes).
+
+El reloj del bus es de unos 140 kHz, así que una interrupción normal del ESP32-S3 llega sin
+hardware especial. La copia se lee cuando el bus lleva unos milisegundos callado, para no leer
+un refresco a medias.
+
+**Decodificar = convertir esos 16 bytes en números:**
+
+| Bytes | Campo | Dígitos |
+|---|---|---|
+| 0–4 | PESO | 5 |
+| 5–9 | PRECIO UNITARIO | 5 |
+| 10–15 | IMPORTE TOTAL | 6 (en la placa los dos últimos van cruzados: el 15 antes que el 14) |
+
+- **Byte → dígito:** los bits 0–6 son los segmentos `a`–`g` y el bit 7 el punto. Una tabla de
+  7 segmentos lo traduce (`0x3F` = "0", `0x06` = "1", `0x7F` = "8"…), y también "blanco" y el
+  signo "−" (solo el segmento `g`).
+- **Dígitos → valor:** se juntan alineados a la derecha del campo y se coloca el decimal (PESO y
+  TOTAL: 2 decimales fijos; PRECIO: lo marca el punto que encienda la balanza, o es entero).
+- **Robustez:** un icono (NET/TARA…) que se solape con un dígito se tolera (1 segmento de
+  diferencia), y en lo que se muestra en el panel un refresco dañado por ruido se descarta
+  porque difiere de sus vecinos. "Estable" no viene en el bus: lo calcula el ESP cuando el
+  peso lleva 4 refrescos seguidos igual.
+
+Qué byte es qué dígito y qué bit qué segmento es justo lo que se averigua con el procedimiento
+de más abajo; en esta balanza resultó ser el estándar (`a` = bit 0 … `g` = bit 6, punto = bit 7).
+
 ### Conexión (3 cables)
 
 | Balanza (conector DIS) | → | ESP32 |
@@ -87,7 +132,7 @@ Comandos del Monitor Serie: `d` normal · `c` transacciones crudas · `f` estad�
 
 Con el mapa de la Fase 1, el firmware:
 - Escucha pasiva → reconstruye los 16 bytes en cada refresco.
-- Aplica el mapa → PESO, PRECIO, TOTAL, puntos decimales, icono ESTABLE.
+- Aplica el mapa → PESO, PRECIO, TOTAL, puntos decimales, y calcula si el peso está estable.
 - Detecta cuándo se retira una gaveta y guarda **un pesaje** (distingue tara de retiro real);
   todos los pesajes se conservan (sobreviven a apagones) hasta que se pulse *Borrar todo*:
   los últimos 120 en NVS y el historial completo en un archivo en flash (LittleFS).
