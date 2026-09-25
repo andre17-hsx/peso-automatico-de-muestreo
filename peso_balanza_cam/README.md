@@ -30,9 +30,6 @@ conector FFC de cámara y doble USB-C; se cambió de módulo por daño de hardwa
 
 Lo desactivado **no se compila** (ni reserva pines ni RAM).
 
-`config.h` lleva las claves WiFi y **no está en el repositorio**: copia
-`config.example.h` a `config.h` y pon tus claves antes de compilar.
-
 ---
 
 ## 2. Compilar (Arduino IDE)
@@ -474,8 +471,7 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
 | Fichero | Contenido |
 |---|---|
 | `peso_balanza_cam.ino` | setup/loop, WiFi, portal cautivo, recuperación del AP, orquestación |
-| `config.example.h` | plantilla de configuración con claves de ejemplo → copiar a `config.h` |
-| `config.h` | **todo lo ajustable**: modo, WiFi, TZ, pines y mapa del sniffer, umbrales (no se versiona) |
+| `config.example.h` | **todo lo ajustable**: modo, WiFi, TZ, pines y mapa del sniffer, umbrales |
 | `seg7.h` | tabla de 7 segmentos (compartida) |
 | `weighlog.h/.cpp` | máquina de estados del pesaje + buffer de los últimos pesajes + agrupación malla/BIN (NVS) |
 | `histarch.h/.cpp` | archivo permanente con **todos** los pesajes (LittleFS, solo-añadir) |

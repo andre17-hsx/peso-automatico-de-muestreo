@@ -35,14 +35,6 @@ balanza, sin tocar el circuito de medida y sin problemas de iluminación/OCR.
 
 No hace falta analizador lógico: un **ESP32 / ESP32-S3** hace de sniffer.
 
-## Configuración inicial (claves WiFi)
-
-`peso_balanza_cam/config.h` lleva las claves WiFi reales y **no se sube a Git** (está en
-`.gitignore`). Al clonar el repo, copia `peso_balanza_cam/config.example.h` a
-`peso_balanza_cam/config.h` y pon tus claves: `WIFI_AP_PASS` (la red que crea el ESP) y, si usas
-router, `WIFI_SSID` / `WIFI_PASS`. Si cambias en `config.h` algo que no sea una clave, repítelo
-en `config.example.h` para que el repo no se desactualice.
-
 ## Sketches
 
 | Carpeta | Placa | Qué hace |

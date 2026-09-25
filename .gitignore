@@ -1,5 +1,2 @@
-# claves WiFi reales: se copian de peso_balanza_cam/config.example.h
 peso_balanza_cam/config.h
-
-# copias de seguridad locales (el historial de git las reemplaza)
 _backup_*/
