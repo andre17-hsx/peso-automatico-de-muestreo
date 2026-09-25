@@ -164,6 +164,32 @@
                                     //   (era 40).  Mas muestras = pilla mejor el
                                     //   transitorio.  Vuelve a 40 para revertir.
 
+// --- captura por VENTANA TOLERANTE (gavetas con agua que escurre, <= ~2 s puestas) ---
+//  Antes el valor solo se daba por "estable" si NO cambiaba nada durante ~0,25 s
+//  (y 4 refrescos iguales); con un escurrido de 0,1 lb/s eso casi nunca ocurria.
+//  Ahora se da por ASENTADO si las lecturas de los ultimos WEIGH_WIN_MS varian menos
+//  de WEIGH_BAND.  Garantia de "nada de la bajada": la referencia es el primer valor
+//  asentado de ESA gaveta (se reinicia con cada gaveta) y despues solo se aceptan
+//  valores asentados a menos de max(WEIGH_TOL_ABS, WEIGH_TOL_PCT %) de ella; la
+//  caida al retirar la gaveta baja decenas de lb en fracciones de segundo, asi que
+//  ni forma un tramo asentado ni entra en ese margen.
+//  Durante los primeros WEIGH_PLACE_MS con carga la referencia si puede subir
+//  (gaveta posada despacio, sostenida por la mano).
+//  Pon WEIGH_PLATEAU 0 para volver EXACTAMENTE al criterio anterior.
+#define WEIGH_PLATEAU      1
+#define WEIGH_WIN_MS       250      // ventana de lecturas (ms)
+#define WEIGH_BAND         0.15f    // max-min dentro de la ventana (lb; la balanza va de 0,1 en 0,1)
+#define WEIGH_TOL_ABS      1.0f     // margen respecto a la referencia (lb) ...
+#define WEIGH_TOL_PCT      3.0f     // ... o este % de ella, lo que sea MAYOR
+#define WEIGH_PLACE_MS     1000     // fase de colocacion: la referencia puede subir
+
+// --- registro de diagnostico (/log) ---
+//  Guarda en RAM (no en flash) los ultimos eventos: pesajes guardados/descartados y
+//  por que, conexiones/desconexiones de celulares con su señal, bloqueos del bucle
+//  principal y el motivo del ultimo reinicio.  Se descarga desde el movil: /log
+//  Se pierde si el ESP se reinicia o se apaga: descargalo antes.  0 = desactivado.
+#define DIAG_LOG           1
+
 // ===========================================================================
 //  OCR de 7 segmentos  (pantalla PESO vista por la camara)
 // ===========================================================================

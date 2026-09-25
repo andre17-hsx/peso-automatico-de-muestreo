@@ -76,7 +76,9 @@
 #include "ocr7seg.h"
 #include "sniffer_tm1640.h"
 #include "weighlog.h"
+#include "diaglog.h"
 #include "web_ui.h"
+#include <esp_wifi.h>
 
 #if WIFI_CAPTIVE
   #include <DNSServer.h>
@@ -161,6 +163,67 @@ static void onWifiEvent(WiFiEvent_t event) {
   if (event == ARDUINO_EVENT_WIFI_AP_STOP) g_apNeedsRestart = true;   // lo procesa loop()
 }
 
+// Celulares que entran / salen de la red del ESP, para el registro (/log).
+// Llega en la tarea de eventos de WiFi: solo se anota (sin floats ni esperas).
+// motivo: 8 = el celular se fue · 3 = deauth · 4 = por inactividad ·
+//         2 = autenticacion expirada · 15 = fallo de handshake
+static void onWifiStaEvent(arduino_event_id_t ev, arduino_event_info_t info) {
+  if (ev == ARDUINO_EVENT_WIFI_AP_STACONNECTED) {
+    g_diagCnt.wifiConn++;
+    diagLog("WIFI + cliente %02X:%02X aid=%d",
+            (unsigned)info.wifi_ap_staconnected.mac[4], (unsigned)info.wifi_ap_staconnected.mac[5],
+            (int)info.wifi_ap_staconnected.aid);
+  } else if (ev == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED) {
+    g_diagCnt.wifiDisc++;
+    diagLog("WIFI - cliente %02X:%02X motivo=%d",
+            (unsigned)info.wifi_ap_stadisconnected.mac[4], (unsigned)info.wifi_ap_stadisconnected.mac[5],
+            (int)info.wifi_ap_stadisconnected.reason);
+  }
+}
+
+#if DIAG_LOG
+// Resumen cada ~2 min para el registro: señal de cada celular, memoria y
+// cuantos refrescos por segundo manda el display de la balanza.
+static void diagStatus() {
+  char rs[32] = "";
+  int off = 0;
+  wifi_sta_list_t sl;
+  memset(&sl, 0, sizeof(sl));
+  if (esp_wifi_ap_get_sta_list(&sl) == ESP_OK)
+    for (int i = 0; i < sl.num && i < 4 && off < (int)sizeof(rs) - 6; i++)
+      off += snprintf(rs + off, sizeof(rs) - off, "%d ", (int)sl.sta[i].rssi);
+  unsigned fps = 0;
+#if ENABLE_SNIFFER
+  {
+    static uint32_t lastCnt = 0, lastMs = 0;
+    SnifState s; snifGet(s);
+    uint32_t nowMs = millis();
+    if (lastMs && nowMs > lastMs) fps = (unsigned)(((s.refreshCount - lastCnt) * 1000UL) / (nowMs - lastMs));
+    lastCnt = s.refreshCount; lastMs = nowMs;
+  }
+#endif
+  diagLog("ST cli=%d rssi[%s] heap=%lu/%lu fps=%u", WiFi.softAPgetStationNum(), rs,
+          (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap(), fps);
+}
+
+// Mide cuanto tarda cada vuelta del bucle principal (y cuanto de eso es el
+// servidor web).  Solo anota si pasa de DIAG_STALL_MS, y como mucho 1 vez/s.
+#define DIAG_STALL_MS 80
+static void loopTiming(uint32_t loopUs, uint32_t webUs) {
+  uint32_t lm = loopUs / 1000, wm = webUs / 1000;
+  if (lm > g_diagCnt.maxLoopMs) g_diagCnt.maxLoopMs = lm;
+  if (wm > g_diagCnt.maxWebMs)  g_diagCnt.maxWebMs  = wm;
+  if (lm >= DIAG_STALL_MS) {
+    g_diagCnt.slowLoops++;
+    static uint32_t lastLog = 0;
+    if (millis() - lastLog > 1000) {
+      lastLog = millis();
+      diagLog("BUCLE lento %lu ms (web %lu ms)", (unsigned long)lm, (unsigned long)wm);
+    }
+  }
+}
+#endif   // DIAG_LOG
+
 //  llamado cada 5 s desde el heartbeat que ya existia en loop() (ver mas abajo)
 static void wifiCheckHealth() {
 #if WIFI_MODE == 0
@@ -201,6 +264,8 @@ static void wifiConnect() {
   WiFi.setSleep(false);
   WiFi.setHostname(WIFI_HOSTNAME);
   WiFi.onEvent(onWifiEvent);       // armado ANTES de levantar el AP, por si se cae ya de arranque
+  WiFi.onEvent(onWifiStaEvent, ARDUINO_EVENT_WIFI_AP_STACONNECTED);      // para el registro /log
+  WiFi.onEvent(onWifiStaEvent, ARDUINO_EVENT_WIFI_AP_STADISCONNECTED);
 
 #if WIFI_MODE == 0                                // ---- SOLO AP (campo) ----
   WiFi.mode(WIFI_AP);
@@ -248,6 +313,7 @@ void setup() {
   Serial.printf("[modo] OCR=%d  SNIFFER=%d  WIFI_MODE=%d\n",
                 ENABLE_OCR, ENABLE_SNIFFER, WIFI_MODE);
 
+  diagBegin();                         // registro /log: anota el motivo del ultimo reinicio
   weighBegin();                        // recupera el historial guardado en NVS
 
 #if ENABLE_SNIFFER
@@ -274,6 +340,9 @@ void setup() {
 
 // ---------------------------------------------------------------------------
 void loop() {
+#if DIAG_LOG
+  const uint32_t loopT0 = micros();
+#endif
   if (g_apNeedsRestart) {
     g_apNeedsRestart = false;
     if (millis() - g_apStartMs >= AP_GRACE_MS) wifiRecoverAP("evento AP_STOP");   // dentro de la gracia: se ignora
@@ -282,7 +351,13 @@ void loop() {
 #if WIFI_CAPTIVE
   if (g_apUp) dnsServer.processNextRequest();
 #endif
+#if DIAG_LOG
+  const uint32_t webT0 = micros();
+#endif
   server.handleClient();      // el OCR ya NO se hace aqui: va en su propia tarea
+#if DIAG_LOG
+  const uint32_t webUs = micros() - webT0;
+#endif
 
 #if ENABLE_SNIFFER
   snifLoop();
@@ -325,4 +400,12 @@ void loop() {
                   WiFi.softAPgetStationNum(), (unsigned long)g_apRecoverCount);
     wifiCheckHealth();     // red de seguridad: por si el AP quedo "zombie" sin avisar
   }
+
+#if DIAG_LOG
+  {
+    static uint32_t st = 0;
+    if (millis() - st >= 120000UL) { st = millis(); diagStatus(); }
+    loopTiming(micros() - loopT0, webUs);
+  }
+#endif
 }

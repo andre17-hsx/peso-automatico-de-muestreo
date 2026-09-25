@@ -5,6 +5,7 @@
 #include "config.h"
 #include "weighlog.h"
 #include "histarch.h"
+#include "diaglog.h"
 #include <math.h>
 #include <time.h>
 #include <Preferences.h>
@@ -53,6 +54,28 @@
 #endif
 #ifndef HIST_BATCH
 #define HIST_BATCH          8      // cada cuantos pesajes se pasan al archivo permanente (en lote)
+#endif
+#ifndef WEIGH_FEED_MS
+#define WEIGH_FEED_MS       20
+#endif
+// captura por ventana tolerante (ver config.h)
+#ifndef WEIGH_PLATEAU
+#define WEIGH_PLATEAU       1
+#endif
+#ifndef WEIGH_WIN_MS
+#define WEIGH_WIN_MS        250
+#endif
+#ifndef WEIGH_BAND
+#define WEIGH_BAND          0.15f
+#endif
+#ifndef WEIGH_TOL_ABS
+#define WEIGH_TOL_ABS       1.0f
+#endif
+#ifndef WEIGH_TOL_PCT
+#define WEIGH_TOL_PCT       3.0f
+#endif
+#ifndef WEIGH_PLACE_MS
+#define WEIGH_PLACE_MS      1000
 #endif
 
 // -------------------------- historial (ring buffer) -----------------------
@@ -124,6 +147,61 @@ static uint32_t g_confirmMs = 0;      // millis al entrar en CONFIRMANDO
 static uint32_t g_negMs    = 0;       // millis desde que la plataforma esta negativa
 static float    g_dip      = 0;       // peso MAS NEGATIVO visto en CONFIRMANDO (rebote de la celda)
 
+// --- datos de la gaveta en curso, para el registro de diagnostico (/log) ---
+static uint32_t g_loadMs = 0;         // millis al empezar la carga
+static uint32_t g_capMs  = 0;         // millis de la 1ª lectura asentada (0 = ninguna aun)
+static int      g_capN   = 0;         // cuantas veces se dio por asentada
+static int      g_ldN    = 0;         // lecturas con carga
+static int      g_rejN   = 0;         // tramos asentados RECHAZADOS por salirse de la banda
+static float    g_ldMax  = NAN, g_ldMin = NAN;
+
+#if WEIGH_PLATEAU
+// Ventana de las ultimas lecturas con carga: se da por ASENTADO un valor si las
+// lecturas de los ultimos WEIGH_WIN_MS varian menos de WEIGH_BAND (ver config.h).
+#define WIN_MAX 64
+static uint32_t g_winT[WIN_MAX];
+static float    g_winP[WIN_MAX];
+static int      g_winN = 0, g_winHead = 0;
+static float    g_refP = NAN;         // referencia de ESTA gaveta (primer valor asentado)
+
+static void winPush(uint32_t t, float p) {
+  g_winT[g_winHead] = t;
+  g_winP[g_winHead] = p;
+  g_winHead = (g_winHead + 1) % WIN_MAX;
+  if (g_winN < WIN_MAX) g_winN++;
+}
+
+// ¿la ventana esta llena (cubre WEIGH_WIN_MS, con al menos 5 lecturas) y todas sus
+// lecturas caben en WEIGH_BAND?
+static bool winFlat(uint32_t now) {
+  if (g_winN < 5) return false;
+  uint32_t cutoff = now - WEIGH_WIN_MS;
+  float mn = 1e9f, mx = -1e9f;
+  int n = 0;
+  uint32_t oldest = now;
+  for (int k = 0; k < g_winN; k++) {
+    int i = (g_winHead - 1 - k + WIN_MAX) % WIN_MAX;
+    if ((int32_t)(g_winT[i] - cutoff) < 0) break;            // mas viejo que la ventana
+    n++;
+    if (g_winP[i] < mn) mn = g_winP[i];
+    if (g_winP[i] > mx) mx = g_winP[i];
+    oldest = g_winT[i];
+  }
+  if (n < 5) return false;
+  if (oldest - cutoff > 3 * WEIGH_FEED_MS) return false;     // la ventana no esta completa
+  return (mx - mn) <= WEIGH_BAND;
+}
+#endif
+
+static void loadDiagReset() {
+  g_capMs = 0; g_capN = 0; g_ldN = 0; g_rejN = 0;
+  g_ldMax = g_ldMin = NAN;
+#if WEIGH_PLATEAU
+  g_winN = 0; g_winHead = 0;
+  g_refP = NAN;
+#endif
+}
+
 static void smReset() {
   g_phase = PH_EMPTY;
   g_sP = g_sPr = g_sT = NAN;
@@ -132,6 +210,7 @@ static void smReset() {
   g_pMoveMs = g_badMs = g_confirmMs = g_negMs = 0;
   g_dip = 0;
   g_state = WS_EMPTY;
+  loadDiagReset();
 }
 
 // recalcula g_latched = PESO del pesaje NO borrado mas reciente (llamar con g_mux tomado)
@@ -621,11 +700,33 @@ void weighArchiveInfo(WeighArchiveInfo* out) {
 //   "Estable" = el bit ESTABLE del bus (stableHint) O, si no lo hay (OCR),
 //   el numero quieto durante WEIGH_STABLE_MS.
 // ===========================================================================
+// cuanto estuvo la gaveta puesta (ms): hasta que la lectura bajo del umbral, o hasta ahora
+static uint32_t loadDur() {
+  uint32_t end = (g_phase == PH_CONFIRM && g_confirmMs) ? g_confirmMs : millis();
+  return end - g_loadMs;
+}
+
 static void commitPending(const char* why) {
   Weighing w = logAppend(g_sP, g_sPr, g_sT, millis());
   Serial.printf("[pesaje] %s -> GUARDADO  PESO %.2f  PRECIO %.2f  TOTAL %.2f\n",
                 why, w.peso, (double)w.precio, (double)w.total);
+  // registro de diagnostico: c=cambio de gaveta, d=display cerrado, r=retiro normal
+  char tag = strstr(why, "cambio") ? 'c' : (why[0] == 'd' ? 'd' : 'r');
+  g_diagCnt.traysOk++;
+  diagLog("OK %.1f %c carga=%lu 1a=%lu n=%d rech=%d", (double)w.peso, tag,
+          (unsigned long)loadDur(), (unsigned long)(g_capMs ? g_capMs - g_loadMs : 0),
+          g_capN, g_rejN);
   if (g_commitCb) g_commitCb(w);
+}
+
+// La gaveta estuvo puesta pero se retiro sin llegar a dar un valor asentado: es un
+// pesaje PERDIDO.  Se deja constancia con lo que se vio, para poder afinar.
+static void logLost(const char* where) {
+  uint32_t dur = loadDur();
+  if (g_ldN < 3 || dur < 200) return;             // un roce de milisegundos, no una gaveta
+  g_diagCnt.traysLost++;
+  diagLog("PERDIDO(%s) carga=%lu max=%.1f min=%.1f n=%d r=%d", where, (unsigned long)dur,
+          (double)g_ldMax, (double)g_ldMin, g_ldN, g_rejN);
 }
 
 static void smStartLoad(float peso) {
@@ -633,6 +734,8 @@ static void smStartLoad(float peso) {
   g_sP = g_sPr = g_sT = NAN;
   g_minLoad = peso;
   g_state = WS_RISING;
+  loadDiagReset();
+  g_loadMs = millis();
   Serial.println("[pesaje] carga detectada, esperando a que se estabilice...");
 }
 
@@ -662,7 +765,12 @@ void weighFeed(float peso, float precio, float total, bool stableHint, bool vali
     if (now - g_badMs < WEIGH_INVALID_MS) return;      // glitch breve -> ignorar
     if (g_phase != PH_EMPTY) {
       if      (sawRealUnload())  commitPending("display cerrado");
-      else if (!isnan(g_sP))     Serial.println("[pesaje] display cerrado sin retiro -> no se guarda");
+      else if (!isnan(g_sP))   {
+        Serial.println("[pesaje] display cerrado sin retiro -> no se guarda");
+        g_diagCnt.tares++;
+        diagLog("DESCARTE display cerrado sin retiro v=%.1f", (double)g_sP);
+      }
+      else                       logLost("display");
       smReset();
     }
     return;
@@ -692,6 +800,52 @@ void weighFeed(float peso, float precio, float total, bool stableHint, bool vali
       else
 #endif
       if (isnan(g_minLoad) || peso < g_minLoad)          g_minLoad = peso;   // sigue el minimo
+      // datos de la gaveta para el registro de diagnostico
+      g_ldN++;
+      if (isnan(g_ldMax) || peso > g_ldMax) g_ldMax = peso;
+      if (isnan(g_ldMin) || peso < g_ldMin) g_ldMin = peso;
+#if WEIGH_PLATEAU
+      // ---- captura por VENTANA TOLERANTE ----
+      // Un valor se da por ASENTADO si las lecturas de los ultimos WEIGH_WIN_MS
+      // varian menos de WEIGH_BAND (un escurrido de 0,1 lb/s cabe de sobra).
+      // La referencia es el primer valor asentado de ESTA gaveta (se borra con
+      // cada gaveta).  Despues solo se aceptan valores asentados a menos de
+      // max(WEIGH_TOL_ABS, WEIGH_TOL_PCT %) de ella: la caida al retirar la gaveta
+      // baja decenas de lb en fracciones de segundo, ni forma un tramo asentado
+      // ni entra en ese margen -> NUNCA se guarda un valor de la bajada.
+      // Solo en los primeros WEIGH_PLACE_MS la referencia puede SUBIR (gaveta
+      // posada despacio / sostenida por la mano).
+      (void)stableHint;
+      winPush(now, peso);
+      if (winFlat(now)) {
+        bool accept = false;
+        if (isnan(g_refP)) {
+          g_refP = peso;
+          accept = true;
+        } else {
+          float tol = fmaxf(WEIGH_TOL_ABS, g_refP * (WEIGH_TOL_PCT / 100.0f));
+          if (fabsf(peso - g_refP) <= tol) {
+            accept = true;
+          } else if (peso > g_refP + tol && (now - g_loadMs) <= WEIGH_PLACE_MS) {
+            g_refP = peso;
+            accept = true;
+          } else {
+            g_rejN++;                                               // fuera de banda: se ignora
+          }
+        }
+        if (accept) {
+          bool nuevo = isnan(g_sP) || fabsf(peso - g_sP) >= WEIGH_EPS;
+          g_sP = peso; g_sPr = precio; g_sT = total;
+          g_minLoad = peso;                                         // referencia nueva
+          g_state = WS_STABLE;
+          if (!g_capMs) g_capMs = now;
+          g_capN++;
+          if (nuevo)
+            Serial.printf("[pesaje] peso estable: %.2f  (precio %.2f  total %.2f)\n",
+                          (double)peso, (double)precio, (double)total);
+        }
+      }
+#else
       bool quiet = (now - g_pMoveMs >= 250);
       bool stbl  = quiet && (stableHint || now - g_pMoveMs >= WEIGH_STABLE_MS);
       if (stbl) {
@@ -699,10 +853,13 @@ void weighFeed(float peso, float precio, float total, bool stableHint, bool vali
         g_sP = peso; g_sPr = precio; g_sT = total;
         g_minLoad = peso;                                           // referencia nueva
         g_state = WS_STABLE;
+        if (!g_capMs) g_capMs = now;
+        g_capN++;
         if (nuevo)
           Serial.printf("[pesaje] peso estable: %.2f  (precio %.2f  total %.2f)\n",
                         (double)peso, (double)precio, (double)total);
       }
+#endif
       return;
     }
     // la plataforma cayo por debajo del umbral -> a CONFIRMANDO
@@ -719,7 +876,12 @@ void weighFeed(float peso, float precio, float total, bool stableHint, bool vali
     // (a) volvio a haber carga -> cambio de gaveta
     if (loaded) {
       if      (sawRealUnload()) commitPending("retirado (cambio de gaveta)");
-      else if (!isnan(g_sP))    Serial.println("[pesaje] carga tras un cero limpio (tara?) -> pendiente descartado");
+      else if (!isnan(g_sP)) {
+        Serial.println("[pesaje] carga tras un cero limpio (tara?) -> pendiente descartado");
+        g_diagCnt.tares++;
+        diagLog("DESCARTE carga tras cero limpio v=%.1f", (double)g_sP);
+      }
+      else                      logLost("cambio");
       smStartLoad(peso);
       return;
     }
@@ -728,7 +890,14 @@ void weighFeed(float peso, float precio, float total, bool stableHint, bool vali
       if (g_negMs == 0) g_negMs = now;
       if (now - g_negMs >= WEIGH_ZERO_MS) {
         if (sawRealUnload()) commitPending("retirado (con tara activa)");  // habia producto real
-        else Serial.printf("[pesaje] TARA (plataforma en %.2f) -> pendiente descartado\n", (double)peso);
+        else if (!isnan(g_sP)) {
+          Serial.printf("[pesaje] TARA (plataforma en %.2f) -> pendiente descartado\n", (double)peso);
+          g_diagCnt.tares++;
+          diagLog("TARA v=%.1f plataforma=%.1f", (double)g_sP, (double)peso);
+        } else {
+          Serial.printf("[pesaje] SIN ASENTAR (plataforma en %.2f) -> gaveta NO guardada\n", (double)peso);
+          logLost("neg");
+        }
         smReset();
       }
       return;
@@ -745,8 +914,14 @@ void weighFeed(float peso, float precio, float total, bool stableHint, bool vali
 #endif
     if (now - g_confirmMs >= win) {
       if      (realUnload)   commitPending("retirado");
-      else if (!isnan(g_sP)) Serial.printf("[pesaje] cero limpio (dip %.2f) sin descarga (tara?) -> no se guarda\n", (double)g_dip);
-      else                   Serial.println("[pesaje] cero sin lectura estable -> nada");
+      else if (!isnan(g_sP)) {
+        Serial.printf("[pesaje] cero limpio (dip %.2f) sin descarga (tara?) -> no se guarda\n", (double)g_dip);
+        g_diagCnt.tares++;
+        diagLog("TARA(c) v=%.1f dip=%.2f", (double)g_sP, (double)g_dip);
+      } else {
+        Serial.println("[pesaje] cero sin lectura estable -> nada");
+        logLost("cero");
+      }
       smReset();
     }
     return;

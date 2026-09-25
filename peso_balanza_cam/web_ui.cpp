@@ -7,7 +7,8 @@
 //    /weighings        JSON historial de pesajes capturados
 //    /weighings.csv    historial en CSV (para descargar)
 //    /weighings/clear  POST -> borra el historial
-//    /targets          ?malla=200&bin=800 -> pone los objetivos de agrupacion
+//    /log              registro de diagnostico (?dl=1 lo descarga)
+//    /targets         ?malla=200&bin=800 -> pone los objetivos de agrupacion
 //    /snapshot.jpg     foto actual (gris)                          [OCR]
 //    /ocr_debug.jpg    foto con las zonas dibujadas                [OCR]
 //    /sniffer          16 bytes de RAM del display                 [SNIFFER]
@@ -20,6 +21,7 @@
 #include "ocr7seg.h"
 #include "sniffer_tm1640.h"
 #include "weighlog.h"
+#include "diaglog.h"
 #include <WiFi.h>
 #include <Preferences.h>
 #include <time.h>
@@ -190,9 +192,18 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
  body::before{content:"";position:fixed;inset:0;z-index:-1;
    background:radial-gradient(58% 42% at 82% -4%,var(--glow),transparent 72%),
      linear-gradient(180deg,var(--bg1),var(--bg2))}
- .bar{position:sticky;top:0;z-index:9;display:flex;align-items:center;gap:10px;
+ .top{position:sticky;top:0;z-index:9}
+ .bar{display:flex;align-items:center;gap:10px;
    padding:11px 15px;background:var(--glass);border-bottom:1px solid var(--line);
    -webkit-backdrop-filter:blur(16px) saturate(1.4);backdrop-filter:blur(16px) saturate(1.4)}
+ /* ---- aviso de SIN SEÑAL: el panel no recibe respuesta del ESP ---- */
+ .stale{display:flex;align-items:center;justify-content:center;gap:4px 12px;flex-wrap:wrap;
+   padding:12px 14px;background:var(--danger);color:#fff;text-align:center}
+ .stale b{font-size:19px;font-weight:850;letter-spacing:.06em}
+ .stale span{font-size:12.5px;font-weight:600}
+ body.nosig .screen{opacity:.22;filter:grayscale(1)}
+ body.nosig .prow,body.nosig .sub,body.nosig .last,body.nosig .totbox{opacity:.4}
+ .screen,.prow,.sub,.last,.totbox{transition:opacity .25s,filter .25s}
  .bar .ttl{font-weight:650;font-size:15px}
  .ib{margin-left:auto;width:33px;height:33px;display:grid;place-items:center;
    border-radius:10px;border:1px solid var(--brd);background:var(--solid);
@@ -355,10 +366,15 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
    .bar,.pill,.last,.whist,.totbox,.tgt{background:var(--solid)}
  }
 </style>
-<div class=bar>
+<div class=top>
+ <div class=bar>
   <span class=ttl>Balanza · muestreo</span>
   <button class=ib id=thm onclick=themeToggle() aria-label="Cambiar tema"></button>
   <span class=live id=live></span>
+ </div>
+ <div class=stale id=stale role=alert hidden>
+  <b>SIN SEÑAL</b><span id=staleTx>los datos NO están actualizados</span>
+ </div>
 </div>
 <div class=wrap>
 
@@ -415,7 +431,7 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
    <span class=totn id=totn>0 muestras</span>
  </div>
 
- <details><summary>Historial</summary>
+ <details id=hist><summary>Historial</summary>
    <div class=hh>
      <span class=lbl>HISTORIAL</span><span class=cnt id=wc>0</span>
    </div>
@@ -435,6 +451,8 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
    <div class=whist id=whist><div class=empty>...</div></div>
    <textarea id=csvbox readonly hidden></textarea>
  </details>
+
+ <p class=foot>Diagnóstico: <a href=/log>ver</a> · <a href="/log?dl=1">descargar</a></p>
 </div>
 <div class=gpop id=gpop hidden onclick="hideGpop()">
   <div class=card onclick="event.stopPropagation()">
@@ -469,11 +487,50 @@ function ledRow(id,mask,dps,from,len,c){var s='';
  for(var i=0;i<len;i++)s+=dgt(mask[from+i]||0,dps[from+i]||0,c);
  el(id).innerHTML=s;}
 function f2(x){return (x==null||isNaN(x))?'--':Number(x).toFixed(2);}
-var lastN=-1;
+// ---- comunicacion resistente ----
+// El ESP atiende de a UN cliente: si una peticion se cuelga (celular con poca señal)
+// las siguientes se amontonan.  Por eso: cada peticion tiene un limite de tiempo,
+// nunca hay dos iguales a la vez, y si pasan STALE_MS sin una respuesta buena se
+// avisa a lo grande (los numeros de la pantalla ya no son de fiar).
+var STALE_MS=4000, lastOk=Date.now(), resumeAt=Date.now(), isStale=false;
+function getJ(url,ms){
+  var ctl=(typeof AbortController!=='undefined')?new AbortController():null, t;
+  var work=fetch(url,{cache:'no-store',signal:ctl?ctl.signal:undefined}).then(function(r){
+    if(!r.ok) throw new Error('http '+r.status); return r.json(); });
+  var tm=new Promise(function(_,rej){ t=setTimeout(function(){ if(ctl) ctl.abort(); rej(new Error('timeout')); },ms); });
+  return Promise.race([work,tm]).then(function(v){ clearTimeout(t); return v; },
+                                      function(e){ clearTimeout(t); throw e; });
+}
+// segundos sin respuesta buena, o -1 si el dato esta al dia.  El reloj cuenta desde la
+// ultima respuesta buena O desde que la pantalla volvio a estar activa (lo que sea mas
+// reciente): al volver de otra app el navegador tenia los temporizadores dormidos.
+function staleAge(now,ok,resume,limit){
+  var age=now-Math.max(ok,resume);
+  return age>limit?Math.round(age/1000):-1;
+}
+function watchStale(){
+  if(document.hidden) return;
+  var a=staleAge(Date.now(),lastOk,resumeAt,STALE_MS), s=(a>=0);
+  if(s!==isStale){
+    isStale=s;
+    document.body.classList.toggle('nosig',s);
+    el('stale').hidden=!s;
+    if(s) el('live').classList.remove('up');
+  }
+  if(s) el('staleTx').textContent='sin respuesta hace '+a+' s · reintentando…';
+}
+document.addEventListener('visibilitychange',function(){
+  if(!document.hidden){ resumeAt=Date.now(); tick(); }
+});
+var lastN=-1, tickBusy=false;
 async function tick(){
+ if(tickBusy) return;                       // ya hay una en camino: no amontonar
+ tickBusy=true;
  try{
-  var j=await (await fetch('/api',{cache:'no-store'})).json();
+  var j=await getJ('/api',2000);
+  lastOk=Date.now();
   el('live').classList.add('up');
+  watchStale();                           // si estaba en SIN SEÑAL, se quita al instante
   if(j.disp){
     el('screen').hidden=false; el('bigbox').hidden=true;
     ledRow('scPeso',  j.disp.mask,j.disp.dp,0,5,'xl');
@@ -498,7 +555,7 @@ async function tick(){
       '<span class=chip>#'+L.n+'</span></div>'+
       '<div class=meta>precio '+f2(L.precio)+'  ·  total '+f2(L.total)+'</div>';
     if(L.id!=lastN && lastN>=0){ el('last').classList.remove('new');
-      void el('last').offsetWidth; el('last').classList.add('new'); tabla(); }
+      void el('last').offsetWidth; el('last').classList.add('new'); histDirty=true; }
     lastN=L.id;
   }else{ el('last').style.display='none'; }
   el('wc').textContent=j.wcount;
@@ -512,8 +569,21 @@ async function tick(){
   tgtProgress('subMalla', j.mSum, j.mTgt, 'malla '+j.mId);
   tgtProgress('subBin',   j.bSum, j.bTgt, 'BIN '+j.bId);
   groupsClosed(j);
- }catch(e){ el('live').classList.remove('up'); }
+  histPoll(j);
+ }catch(e){                               // sin respuesta: watchStale() lo avisa pasados STALE_MS
+  if(e&&e.message==='timeout') setTimeout(tick,0);   // ya se esperaron 2 s: reintenta sin sumar otro segundo
+ }
+ finally{ tickBusy=false; }
 }
+// El historial solo se pide si esta ABIERTO (cerrado no se ve, y cada peticion de mas
+// es trabajo para el ESP): al abrirlo, cuando entra un pesaje nuevo o cambia la
+// cantidad (borrado desde otro celular), y cada ~7 s mientras siga abierto.
+var histDirty=true, histT=0, lastWc=-1;
+function histPoll(j){
+  if(j.wcount!==lastWc){ if(lastWc>=0) histDirty=true; lastWc=j.wcount; }
+  if(el('hist').open && (histDirty || Date.now()-histT>7000)) tabla();
+}
+el('hist').addEventListener('toggle',function(){ if(el('hist').open) tabla(); });
 // aviso sobre la memoria permanente del historial (archivo en flash del ESP)
 function histNotice(h){
   var w=el('histWarn'), t='';
@@ -610,10 +680,14 @@ function hhmm(t){return (t&&t.length>=19)?t.slice(11,19):'—';}
 function ghdr(text,total,nested){
   return '<div class="ghdr'+(nested?' ghdr-m':'')+'">'+esc(text)+'<span class=ghdr-v>'+f2(total)+' lb</span></div>';
 }
+var tabBusy=false;
 async function tabla(){
+ if(tabBusy) return;                                  // ya hay una en camino
  if(document.querySelector('.wrow.open')) return;   // no refrescar con una fila abierta
+ tabBusy=true;
  try{
-  var j=await (await fetch('/weighings',{cache:'no-store'})).json();
+  var j=await getJ('/weighings',5000);
+  histDirty=false; histT=Date.now();
   var box=el('whist');
   if(!j.items||!j.items.length){ box.innerHTML='<div class=empty>sin pesajes todavía</div>'; return; }
   // subtotal por grupo (BIN / malla): el ESP manda el de TODO el historial (j.bins / j.grp).
@@ -647,6 +721,7 @@ async function tabla(){
   box.innerHTML=h;
   [].forEach.call(box.querySelectorAll('.wrow'),bindRow);
  }catch(e){}
+ finally{ tabBusy=false; }
 }
 function closeRows(except){
   [].forEach.call(document.querySelectorAll('.wrow.open'),function(r){ if(r!==except) r.classList.remove('open'); });
@@ -687,7 +762,7 @@ function bindRow(row){
 }
 function delRow(id){
   fetch('/weighings/del?id='+encodeURIComponent(id)).then(function(){
-    lastN=-1; closeRows(null); tabla(); tick();
+    lastN=-1; histDirty=true; closeRows(null); tabla(); tick();
   });
 }
 async function copyCsv(){
@@ -710,11 +785,11 @@ function delClick(){ el('confirm').hidden=false; }
 function cancelClear(){ el('confirm').hidden=true; }
 function doClear(){
   el('confirm').hidden=true;
-  fetch('/weighings/clear').then(function(){ lastN=-1; el('last').style.display='none'; tabla(); tick(); });
+  fetch('/weighings/clear').then(function(){ lastN=-1; histDirty=true; el('last').style.display='none'; tabla(); tick(); });
 }
 try{fetch('/settime?epoch='+Math.floor(Date.now()/1000));}catch(e){}
 setInterval(tick,1000); tick();
-setInterval(tabla,2000); tabla();
+setInterval(watchStale,500);
 </script>
 </html>)HTML";
 
@@ -957,6 +1032,32 @@ static void handleSetTime() {
   struct timeval tv; tv.tv_sec = (time_t)ep; tv.tv_usec = 0;
   settimeofday(&tv, nullptr);
   S->send(200, "text/plain", "ok");
+}
+
+//  registro de diagnostico (ver diaglog.h):  /log  (se ve en pantalla)  |  /log?dl=1  (se descarga)
+//  Se manda por trozos de ~1,2 KB, sin armar todo el texto en RAM.
+struct LogCtx { String buf; bool dead; };
+
+static void logSink(const char* s, size_t n, void* p) {
+  LogCtx* c = (LogCtx*)p;
+  if (c->dead) return;
+  c->buf.concat(s, (unsigned int)n);
+  if (c->buf.length() >= 1200) {
+    if (!S->client().connected()) { c->dead = true; return; }    // el movil se fue
+    S->sendContent(c->buf);
+    c->buf = "";
+  }
+}
+
+static void handleLog() {
+  if (S->hasArg("dl")) S->sendHeader("Content-Disposition", "attachment; filename=balanza-log.txt");
+  S->sendHeader("Cache-Control", "no-store");
+  S->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  S->send(200, "text/plain; charset=utf-8", "");
+  LogCtx c; c.dead = false; c.buf.reserve(1400);
+  diagDump(logSink, &c);
+  if (!c.dead && c.buf.length()) S->sendContent(c.buf);
+  S->sendContent("");
 }
 
 #if ENABLE_OCR
@@ -1408,6 +1509,7 @@ void webBegin(WebServer& srv) {
   S->on("/targets",         handleSetTargets);        // ?malla=200&bin=800
   S->on("/info",            handleSetInfo);           // ?sector=A&piscina=12
   S->on("/settime",         handleSetTime);
+  S->on("/log",             handleLog);                 // diagnostico (?dl=1 lo descarga)
 #if ENABLE_OCR
   S->on("/ocr_live",        handleOcrLive);
   S->on("/ocr_learn",       handleOcrLearn);

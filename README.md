@@ -78,6 +78,11 @@ Con el mapa de la Fase 1, el firmware:
 - Detecta cuándo se retira una gaveta y guarda **un pesaje** (distingue tara de retiro real);
   todos los pesajes se conservan (sobreviven a apagones) hasta que se pulse *Borrar todo*:
   los últimos 120 en NVS y el historial completo en un archivo en flash (LittleFS).
+- Captura el valor con una **ventana tolerante** (acepta el peso aunque el producto escurra o
+  la celda rebote, y nunca guarda un valor de la caída a cero al retirar la gaveta).
+- Lleva un **registro de diagnóstico** en RAM (`/log`, descargable desde el móvil): pesajes
+  guardados/perdidos y por qué, conexiones y señal WiFi, reinicios, esperas del programa.
+- El panel avisa con una franja roja **"SIN SEÑAL"** cuando deja de recibir datos del ESP.
 - Agrupa los pesajes en **mallas y BIN** con objetivos que escribe el operario, y avisa con un
   pop-up cuando se cierra un grupo.
 - Publica todo por WiFi en un **panel web** (la placa crea su propia red) y exporta CSV.

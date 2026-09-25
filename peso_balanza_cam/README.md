@@ -156,8 +156,9 @@ valen para cualquier placa. El ISR lee `GPIO_IN_REG` → usa pines ≤ 31.
 - Un retiro **rápido** se sigue guardando (la celda siempre oscila al descargarse).
 - Re-tarar a mitad de sesión funciona solo: ese salto a 0 se ignora, las
   siguientes gavetas se guardan normal.
-- "Estable" = el **bit ESTABLE del bus** (punto verde del panel). Con OCR se usa
-  "número quieto `WEIGH_STABLE_MS`".
+- "Estable" = **captura por ventana tolerante** (`WEIGH_PLATEAU 1`, ver abajo). Con OCR se
+  usa "número quieto `WEIGH_STABLE_MS`". El punto verde del panel sigue siendo el bit
+  ESTABLE del propio bus: es solo visual y ya no decide qué valor se guarda.
 - **PRECIO y TOTAL** se toman en cada muestra estable (si re-tecleas el precio con
   el peso puesto, se guarda el precio **nuevo**).
 - Monitor Serie: `[pesaje] carga detectada...` · `[pesaje] retirado -> GUARDADO
@@ -181,6 +182,38 @@ firmware no convierte nada, así que la balanza debe estar en **libras**):
 | `WEIGH_DIP` | el neto rebota a menos de `-esto` al retirar de verdad (la celda rebota; una tara nunca baja de 0) | `0.05` |
 | `WEIGH_SETTLE_MS` | con señal de retiro, guarda a los ~350 ms en vez de `WEIGH_CONFIRM_MS` | `350` |
 | `WEIGH_FEED_MS` | cada cuánto se alimenta la máquina de estados (más muestras = pilla mejor el retiro rápido) | `20` |
+| `WEIGH_PLATEAU` | `1` = captura por ventana tolerante (abajo); `0` = criterio anterior (quieto 250 ms + bit ESTABLE del bus) | `1` |
+| `WEIGH_WIN_MS` | ventana en la que las lecturas deben variar poco para dar un valor por asentado | `250` |
+| `WEIGH_BAND` | cuánto puede variar el peso dentro de esa ventana (el escurrido, ~0,1 lb/s, cabe de sobra) | `0.15` |
+| `WEIGH_TOL_ABS` / `WEIGH_TOL_PCT` | tras el primer valor asentado solo se aceptan otros a menos de `max(TOL_ABS, TOL_PCT %)` de él | `1.0` / `3.0` |
+| `WEIGH_PLACE_MS` | durante este tiempo desde que se detecta la carga, la referencia todavía puede SUBIR (gaveta posada despacio o sostenida con la mano) | `1000` |
+| `DIAG_LOG` | `1` = registro de diagnóstico `/log` (ver sección 8); `0` = desactivado | `1` |
+
+**Captura por ventana tolerante (`WEIGH_PLATEAU 1`).** El criterio anterior exigía que el
+número estuviera *quieto* 250 ms y coincidiera con el bit ESTABLE del bus; con el escurrido
+del producto (el peso baja ~0,1 lb/s) o una gaveta que se apoya con rebote, muchas veces
+no se cumplía en los ~2 s que la gaveta está en la balanza y el pesaje se perdía. Ahora:
+
+1. Un valor se da por **asentado** si las lecturas de los últimos `WEIGH_WIN_MS` (250 ms)
+   varían menos de `WEIGH_BAND` (0,15 lb) — con al menos 5 lecturas y la ventana completa.
+2. El **primer valor asentado de ESA gaveta** es su referencia (se borra con cada gaveta:
+   una de 50 lb seguida de una de 29 lb no se contamina). A partir de ahí solo se aceptan
+   valores asentados a menos de `max(1 lb, 3 %)` de la referencia.
+3. **Nunca se guarda un valor de la caída a cero** al retirar la gaveta: esa bajada
+   recorre decenas de lb en fracciones de segundo, ni forma un tramo asentado ni entra en
+   la banda de la referencia. Lo mismo si el operario presiona la gaveta un instante antes
+   de sacarla (esa subida se ignora).
+4. Solo durante el primer `WEIGH_PLACE_MS` la referencia puede **subir** (la gaveta se posa
+   despacio o la sostiene la mano un instante).
+5. El valor guardado es el **último** asentado dentro de la banda (el escurrido se refleja
+   como una bajada de décimas), y sigue rigiendo la lógica de tara/retiro de arriba.
+
+Simulado offline con curvas de gaveta realistas (rebote de la celda, escurrido, display a
+5–20 Hz): guarda ~90 % de las gavetas frente a ~20–50 % del criterio anterior; todas las que
+guardaba el anterior las guarda también el nuevo (diferencia media de valor 0,05 lb); una
+tara no se guarda; el peor valor guardado quedó a 0,35 lb por debajo del peso real. Las
+gavetas que se retiran en menos de ~0,5 s tras posarse siguen sin poder guardarse (no llegan
+a asentar), pero ahora **quedan anotadas** en `/log` como `PERDIDO`.
 
 Si un pesaje real se sigue perdiendo, mira el Monitor Serie: la línea
 `cero limpio (dip X.XX) sin descarga` dice cuánto rebotó — baja `WEIGH_DIP`
@@ -242,6 +275,14 @@ enlaces a `/config` y `/sniffer`), que sigue disponible entrando a esas rutas di
   **"Copiar CSV"** lo pone en el portapapeles (útil en iPhone, donde la ventanita
   automática de la red no deja descargar archivos — para el archivo, abre Safari y entra
   a `192.168.4.1`).
+- **Aviso de SIN SEÑAL**: el ESP atiende a un solo cliente a la vez, así que si el móvil
+  tiene poca señal las peticiones se atascan y la pantalla se quedaba con el último valor
+  como si fuera actual. Ahora cada petición del panel tiene un límite de 2 s, nunca hay dos
+  iguales a la vez, y si pasan ~4 s sin una respuesta buena sale una **franja roja grande
+  "SIN SEÑAL"** y la pantalla LED se apaga/atenúa (los números que se ven ya no son de
+  fiar). En cuanto vuelve a contestar, se quita sola. El historial solo se pide al ESP
+  cuando está **abierto** (al abrirlo, al entrar un pesaje nuevo y cada ~7 s), no todo el
+  rato.
 - Estilo *glassmorphism*; botón sol/luna arriba a la derecha para **modo claro / oscuro**
   (se recuerda en el navegador). Sin fuentes web ni librerías — funciona sin internet.
 - Cada pesaje guarda los **3 campos**: `peso`, `precio unitario`, `total` (el precio/total
@@ -277,6 +318,7 @@ enlaces a `/config` y `/sniffer`), que sigue disponible entrando a esas rutas di
 | `/targets?malla=200&bin=800` | | pone los objetivos en lb (`0` lo desactiva; si falta un parámetro, ese no cambia) |
 | `/info?sector=A&piscina=12` | | pone sector / piscina (vacío los borra; si falta un parámetro, ese no cambia) |
 | `/settime?epoch=…` | | el móvil le pasa la hora al ESP (sin internet) |
+| `/log` · `/log?dl=1` | | registro de diagnóstico en texto (ver en pantalla / descargar). Enlace "Diagnóstico" al pie del panel |
 | `/config` | | calibración OCR y/o mapa del sniffer (se guarda en NVS) |
 | `/snapshot.jpg` · `/ocr_debug.jpg` | OCR | foto actual / con las zonas dibujadas |
 | `/sniffer` · `/sniffer/raw` | SNIFFER | 16 bytes de RAM / volcado de flancos |
@@ -437,6 +479,7 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
 | `seg7.h` | tabla de 7 segmentos (compartida) |
 | `weighlog.h/.cpp` | máquina de estados del pesaje + buffer de los últimos pesajes + agrupación malla/BIN (NVS) |
 | `histarch.h/.cpp` | archivo permanente con **todos** los pesajes (LittleFS, solo-añadir) |
+| `diaglog.h/.cpp` | registro de diagnóstico en RAM (`/log`) |
 | `ocr7seg.h/.cpp` | cámara + análisis de segmentos (solo si `ENABLE_OCR`) |
 | `sniffer_tm1640.h/.cpp` | ISR del bus DA/SL + TM1640 (solo si `ENABLE_SNIFFER`) |
 | `web_ui.h/.cpp` | servidor web y páginas |
@@ -447,6 +490,39 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
   APrec:N`. `heap min` no debe bajar de forma sostenida; `APrec` debe quedarse en 0. El
   `rssi` sale siempre **0** en modo AP (mide el enlace como cliente, que no existe): para
   el alcance usa el indicador de señal del móvil.
+- **Registro de diagnóstico `/log`** (pensado para pruebas de campo, sin cable ni Monitor
+  Serie): abre `http://192.168.4.1/log` (o el enlace "Diagnóstico" al pie del panel; añade
+  `?dl=1` para descargarlo como `balanza-log.txt`). Vive en **RAM** (~16 KB, últimas 256
+  líneas): no escribe en flash ni usa el Serie, anotar una línea cuesta microsegundos y solo
+  se hace en **eventos**, nunca por muestra → no ralentiza nada. **Se borra al apagar:
+  descárgalo antes de desconectar la batería.** Abre el panel una vez tras encender para
+  que el móvil ponga la hora (si no, las líneas llevan `+123s` = segundos desde el
+  arranque). `DIAG_LOG 0` en `config.h` lo desactiva. Qué anota:
+  - `ARRANQUE motivo=…`: por qué se reinició (`CAIDA-DE-TENSION` = brownout de la
+    alimentación; `PANIC`/`WDT` = fallo del programa; `ENCENDIDO` = conexión normal).
+  - `OK 41.3 r carga=1780 1a=520 n=31 rech=0`: pesaje guardado (peso; `r` retiro / `c`
+    cambio de gaveta / `d` display cerrado; ms que estuvo puesta; ms hasta el 1er valor
+    asentado; nº de lecturas asentadas; cuántas cayeron fuera de banda).
+  - `PERDIDO(neg|cambio|cero|display) carga=… max=… min=…`: una gaveta estuvo puesta y **no
+    llegó a asentar** (no se guardó). Con `carga` (ms puesta) y `max`/`min` se ve si fue
+    por poco tiempo o por un peso que no paraba de moverse → sirve para afinar
+    `WEIGH_WIN_MS` / `WEIGH_BAND`.
+  - `TARA …` / `DESCARTE …`: tara o cambio descartado a propósito (no es una pérdida).
+  - `WIFI + cliente AB:CD` / `WIFI - cliente AB:CD motivo=N`: un móvil entra o sale de la
+    red (`8` se fue él · `3` deauth · `4` inactividad · `2` autenticación expirada · `15`
+    fallo de handshake). Si un móvil sale y vuelve a entrar en el mismo instante, lo más
+    probable es que lo haya provocado su sistema (Android a veces suelta una WiFi "sin
+    internet"), no el ESP.
+  - `ST cli=1 rssi[-63 ] heap=… fps=…` cada ~2 min: nº de móviles, **señal** de cada uno
+    (dBm; peor que ~-80 es mala), memoria libre / mínima y refrescos por segundo del display.
+  - `BUCLE lento 143 ms (web 138 ms)`: una vuelta del programa tardó ≥ 80 ms y cuánto de eso
+    fue el servidor web; si el peso se pierde justo ahí, la causa es esa espera.
+  - Cabecera con contadores (pesajes guardados / perdidos / taras, conexiones, vueltas
+    lentas, la más lenta).
+- **Alimentación y "SIN SEÑAL" en campo**: si el panel se queda congelado o se cae la red,
+  comprueba primero el condensador de salida (~470 µF + 100 nF junto al pin `3V3`, ver
+  sección 2) y el `motivo=` del último `ARRANQUE` en `/log`: si dice `CAIDA-DE-TENSION`, es
+  la alimentación.
 - **"waiting for download" en el Monitor Serie**: el chip arrancó en modo descarga porque
   `GPIO0` (botón BOOT) estaba en bajo al encender o resetear, así que no corre tu programa.
   Apaga y enciende **sin tocar BOOT**. Si algo lo aprieta (la caja, un cable, humedad),
