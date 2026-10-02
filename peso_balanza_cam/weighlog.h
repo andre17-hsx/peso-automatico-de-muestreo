@@ -2,9 +2,13 @@
 #include <Arduino.h>
 
 // ===========================================================================
-//  weighlog  -  Maquina de estados del pesaje + historial  (comun a los dos
-//               metodos: la alimenta el sniffer o el OCR, el que este activo)
+//  weighlog  -  Maquina de estados del pesaje + historial
 // ===========================================================================
+//  weighFeed() se llama SIEMPRE desde la tarea del sniffer (weighTaskFn en el
+//  .ino) -- las demas funciones de aqui las llama el servidor web, en OTRA
+//  tarea.  El historial/grupos ya estan protegidos con un portMUX (g_mux);
+//  weighClear() en cambio solo PIDE el reset de la maquina (bandera), nunca
+//  toca sus variables directamente, para no pisarlas a mitad de un pesaje.
 //
 //   VACIA : la balanza marca "-" (dormida) o ~0.
 //   CARGA : hay peso > WEIGH_ZERO_THRESH.  Mientras este ESTABLE se va
@@ -52,11 +56,12 @@ void weighSetTargets(float mallaTarget, float binTarget);   // <=0 en cualquiera
 
 void        weighBegin();              // carga el historial de NVS (llamar en setup)
 
-// Alimentar con los 3 campos en vivo, a ritmo regular (p. ej. cada 100 ms).
+// Alimentar con los 3 campos en vivo, a ritmo regular (WEIGH_FEED_MS, ver
+// config.h).  Solo la llama weighTaskFn (su propia tarea, ver el .ino).
 //   peso    : dispara la maquina de estados
 //   precio, total : se guardan junto al peso estable
-//   stable  : bit ESTABLE del bus (si el metodo lo tiene; el OCR pasa false y
-//             se usa un "quieto WEIGH_STABLE_MS" interno)
+//   stable  : "estable" calculado por el sniffer (ver SNIF_STABLE_N); con
+//             WEIGH_PLATEAU 0 hace de respaldo si no hay captura por ventana
 //   valid   : false si el display esta ilegible / apagado / dormido
 void        weighFeed(float peso, float precio, float total, bool stable, bool valid);
 

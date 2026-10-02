@@ -5,38 +5,33 @@ el bus del display** (sniffer), guarda cada pesaje, los agrupa en **mallas y BIN
 alertas para el operario, y lo publica por WiFi en un **panel web** (la propia placa
 crea la red; no hace falta router ni internet).
 
-Opcionalmente, y desactivado por defecto, también puede leer el display **con una
-cámara** (OCR) — ver la sección 5. Ese método necesita una placa con conector de cámara.
+Se probó también leer el display con una cámara (OCR de 7 segmentos) antes de llegar a
+este diseño; se descartó porque el sniffer da el valor **exacto** directo del bus, sin
+depender de luz ni encuadre. Si hiciera falta recuperarlo, está en el historial de git
+(commits anteriores a la limpieza de 2026-10-01).
 
 Placa: **ESP32-S3 Super Mini** (chip ESP32-S3FH4R2: 4 MB flash + 2 MB PSRAM Quad,
 un solo USB-C nativo, sin CH340). Antes se usaba un ESP32-S3-WROOM (N16R8) con
 conector FFC de cámara y doble USB-C; se cambió de módulo por daño de hardware
-(ver la sección 6, pines del sniffer).
+(ver la sección 2, pines del sniffer).
 
 ---
 
-## 1. Elegir el método — `config.h`
+## 1. Interruptor general — `config.h`
 
 ```c
-#define ENABLE_OCR       0     // (opcional) leer el display con la cámara
-#define ENABLE_SNIFFER   1     // escuchar el bus DA/SL del display  ← lo que se usa
+#define ENABLE_SNIFFER   1     // escuchar el bus DA/SL del display
 ```
 
-| OCR | SNIFFER | resultado |
-|:---:|:---:|---|
-| 0 | 1 | **solo sniffer del bus** *(configuración actual)* |
-| 1 | 0 | solo cámara — no hay que soldar ni abrir la balanza, pero exige una placa con conector de cámara (la Super Mini no lo tiene) |
-| 1 | 1 | los dos; el panel web los compara |
-
-Lo desactivado **no se compila** (ni reserva pines ni RAM).
+Apagarlo (**0**) no compila nada del sniffer (ni reserva pines ni RAM); solo sirve
+para probar el panel web sin la balanza conectada. No hay otro método de lectura.
 
 ---
 
 ## 2. Compilar (Arduino IDE)
 
 - esp32 (Espressif) ≥ 3.0 · Placa: **ESP32S3 Dev Module** (genérico, sirve para el Super Mini)
-- **PSRAM: `Disabled`** (o `QSPI PSRAM` si el menú obliga a elegir tipo) — con
-  `ENABLE_OCR 0` no hace falta, era solo para los buffers de la cámara
+- **PSRAM: `Disabled`** (nada en este firmware la necesita)
 - Flash Size: `4MB (32Mb)` · Partition: uno pensado para 4MB **que incluya SPIFFS**. Esa
   partición es donde se guarda el **historial completo** de pesajes (ver sección 3); sin ella
   el programa funciona igual, pero solo conserva los últimos 120 pesajes. El binario ocupa
@@ -84,13 +79,6 @@ propia (evento `AP_STOP`, o el modo deja de ser AP), el firmware la vuelve a lev
 solo. Ignora los avisos de los primeros 5 s tras levantarla (`AP_GRACE_MS`), que son
 ruido del arranque. El contador `APrec` del latido por Serial cuenta las recuperaciones
 reales: en funcionamiento normal debe quedar en **0**.
-
-### Pines de la cámara (solo si `ENABLE_OCR 1`)
-
-`config.h` trae el pinout **ESP32-S3-EYE** (el que copian casi todas las placas
-"ESP32-S3-WROOM CAM"). Si al arrancar sale `esp_camera_init fallo 0x...`, busca el
-pinout exacto de tu placa y corrige los `CAM_PIN_*`. Con el sniffer activo y el OCR
-apagado, esos pines no se usan.
 
 ### Pines del sniffer (solo si `ENABLE_SNIFFER 1`)
 
@@ -153,8 +141,8 @@ valen para cualquier placa. El ISR lee `GPIO_IN_REG` → usa pines ≤ 31.
 - Un retiro **rápido** se sigue guardando (la celda siempre oscila al descargarse).
 - Re-tarar a mitad de sesión funciona solo: ese salto a 0 se ignora, las
   siguientes gavetas se guardan normal.
-- "Estable" = **captura por ventana tolerante** (`WEIGH_PLATEAU 1`, ver abajo). Con OCR se
-  usa "número quieto `WEIGH_STABLE_MS`". El punto verde del panel lo calcula el sniffer
+- "Estable" = **captura por ventana tolerante** (`WEIGH_PLATEAU 1`, ver abajo); con
+  `WEIGH_PLATEAU 0` se usa "número quieto `WEIGH_STABLE_MS`". El punto verde del panel lo calcula el sniffer
   (el PESO lleva `SNIF_STABLE_N` = 4 refrescos seguidos igual; no viene en el bus): es solo
   visual y ya no decide qué valor se guarda.
 - **PRECIO y TOTAL** se toman en cada muestra estable (si re-tecleas el precio con
@@ -172,7 +160,7 @@ firmware no convierte nada, así que la balanza debe estar en **libras**):
 | `WEIGH_PARTIAL` | cuánto tiene que bajar el peso con carga para contar como retiro real | `0.085` |
 | `WEIGH_PARTIAL_FRAC` | …o a qué fracción del valor estable (para netos pequeños con tara) | `0.55` |
 | `WEIGH_ZERO_MS` | cuánto dura el negativo para confirmar una tara | `400` |
-| `WEIGH_STABLE_MS` | (solo OCR) número quieto → "estable" | `700` |
+| `WEIGH_STABLE_MS` | (solo con `WEIGH_PLATEAU 0`) número quieto → "estable" | `700` |
 | `WEIGH_INVALID_MS` | display apagado este tiempo → cierra | `2500` |
 | `WEIGH_LOG_SIZE` | pesajes recientes que guarda en el buffer de memoria/NVS | `120` |
 | `WEIGH_ARCHIVE` | `1` = además del buffer, guarda **todos** los pesajes en un archivo en flash hasta *Borrar todo*; `0` = solo el buffer | `1` |
@@ -185,7 +173,11 @@ firmware no convierte nada, así que la balanza debe estar en **libras**):
 | `WEIGH_BAND` | cuánto puede variar el peso dentro de esa ventana (el escurrido, ~0,1 lb/s, cabe de sobra) | `0.15` |
 | `WEIGH_TOL_ABS` / `WEIGH_TOL_PCT` | tras el primer valor asentado solo se aceptan otros a menos de `max(TOL_ABS, TOL_PCT %)` de él | `1.0` / `3.0` |
 | `WEIGH_PLACE_MS` | durante este tiempo desde que se detecta la carga, la referencia todavía puede SUBIR (gaveta posada despacio o sostenida con la mano) | `1000` |
+| `WEIGH_PLAUS_FRAC` | descarta el valor asentado si después de asentarse el peso subió por encima de `valor / PLAUS_FRAC` (ver abajo) | `0.7` |
+| `WEIGH_RESCUE_FRAC` | rescate: si una gaveta se retira sin valor asentado válido, se guarda este factor × el máximo visto (0 = desactivado; ver abajo) | `0.92` |
+| `WEIGH_RESCUE_MIN_LB` / `WEIGH_RESCUE_MIN_MS` | el rescate solo actúa si el máximo es ≥ este peso y la gaveta estuvo puesta ≥ este tiempo (descarta roces) | `15` / `600` |
 | `DIAG_LOG` | `1` = registro de diagnóstico `/log` (ver sección 8); `0` = desactivado | `1` |
+| `DIAG_LOG_LINES` | líneas que conserva `/log` en RAM (64 bytes cada una); de una jornada real salieron ~4 líneas/min, así que 1024 alcanza para ~4 h seguidas | `1024` |
 
 **Captura por ventana tolerante (`WEIGH_PLATEAU 1`).** El criterio anterior exigía que el
 número estuviera *quieto* 250 ms y coincidiera con el "estable" del sniffer; con el escurrido
@@ -212,6 +204,34 @@ guardaba el anterior las guarda también el nuevo (diferencia media de valor 0,0
 tara no se guarda; el peor valor guardado quedó a 0,35 lb por debajo del peso real. Las
 gavetas que se retiran en menos de ~0,5 s tras posarse siguen sin poder guardarse (no llegan
 a asentar), pero ahora **quedan anotadas** en `/log` como `PERDIDO`.
+
+**Chequeo de plausibilidad (`WEIGH_PLAUS_FRAC`).** Encontrado en campo (2026-09-30): la
+gaveta se detiene un instante en un valor que **no es el final** (todavía se está posando),
+pasa la ventana de 0,15 lb/250 ms y se retira antes de asentar en el peso real; como el primer
+valor asentado es la referencia y solo puede subir durante `WEIGH_PLACE_MS`, se guardaba ese
+valor (caso real: `5.3` lb en vez de un peso normal). Ahora el valor asentado sigue mandando
+siempre, salvo que **después de la última vez que se dio por asentado** el peso suba por
+encima de `valor / 0,7`: entonces se descarta y la gaveta queda como `PERDIDO ... cap=N` (con
+`N` > 0 = asentó, pero se descartó) en vez de guardarse mal. Un golpe al poner no lo activa:
+su pico es *anterior* al valor asentado. Coste conocido: si justo antes de retirarla la
+presionan con más de ~43 % de fuerza extra, se pierde. Simulado con la cola de retiro real
+(~0,9 s): gavetas normales y golpes de hasta +110 % sin cambio; el caso del `5.3` y la pausa a
+mitad de colocación dejan de guardarse mal (0 de 600). Se probó antes un chequeo basado en el
+*tiempo* hasta el retiro y se **descartó**: la cola de retiro (última lectura asentada →
+plataforma vacía) dura ~0,6–1,5 s en gavetas normales, así que perdía ~60 % de las buenas.
+
+**Rescate (`WEIGH_RESCUE_FRAC`).** El log real mostró gavetas que se retiran antes de que
+la lectura llegue a asentarse (puestas solo ~1,5–1,8 s) y que se perdían. Si una gaveta se
+retira **de verdad** y no deja ningún valor asentado válido (nunca asentó, o se descartó por
+el chequeo de plausibilidad), ahora se guarda `0,92 ×` el **máximo visto** en vez de perderla.
+Solo si: estuvo puesta ≥ `WEIGH_RESCUE_MIN_MS` (600 ms), su máximo es ≥ `WEIGH_RESCUE_MIN_LB`
+(15 lb; descarta roces de la mano) y el peso **bajó por intermedios** tras el máximo (una
+tara es un escalón limpio: el último valor cargado sigue siendo el máximo, y no se rescata).
+El valor asentado sigue mandando siempre; el rescate nunca se aplica si lo hay. Es una
+**estimación**: aparece en `/log` como `OK 41.3 e carga=… max=… x0.92`, pero en el historial
+y en la web no se distingue de un pesaje asentado. Simulado (retiro antes de asentar): error
+mediano −9 % (con F=1,0 sería −1 %, pero +13 % si manipulan la gaveta ±6 lb); roces de mano
+colados: 0,1 % con mínimo 15 lb.
 
 Si un pesaje real se sigue perdiendo, mira el Monitor Serie: la línea
 `cero limpio (dip X.XX) sin descarga` dice cuánto rebotó — baja `WEIGH_DIP`
@@ -317,75 +337,14 @@ enlaces a `/config` y `/sniffer`), que sigue disponible entrando a esas rutas di
 | `/info?sector=A&piscina=12` | | pone sector / piscina (vacío los borra; si falta un parámetro, ese no cambia) |
 | `/settime?epoch=…` | | el móvil le pasa la hora al ESP (sin internet) |
 | `/log` · `/log?dl=1` | | registro de diagnóstico en texto (ver en pantalla / descargar). Enlace "Diagnóstico" al pie del panel |
-| `/config` | | calibración OCR y/o mapa del sniffer (se guarda en NVS) |
-| `/snapshot.jpg` · `/ocr_debug.jpg` | OCR | foto actual / con las zonas dibujadas |
+| `/config` | | calibración del mapa del sniffer (se guarda en NVS) |
 | `/sniffer` · `/sniffer/raw` | SNIFFER | 16 bytes de RAM / volcado de flancos |
 
 ---
 
-## 5. Puesta a punto del OCR (solo si `ENABLE_OCR 1`)
+## 5. Sniffer del bus
 
-Por defecto va en **modo automático** (`auto=1`): **no hay que encuadrar nada**.
-Cada frame (5×/s) localiza la **banda** de brillo (los LEDs sobre negro) y el
-**borde derecho del último LED** (= borde del dígito de las unidades, que
-siempre está encendido). A partir de ahí monta la rejilla:
-`ancho_digito = alto_banda × asp` , `separacion = ancho_digito × pit`.
-
-**Robusto a que la cámara se mueva:**
-
-- `asp` y `pit` son **proporciones**, no píxeles → si la cámara se acerca/aleja,
-  todo escala solo (digitos más grandes → banda más alta → celdas más anchas).
-  Los mismos `asp`/`pit` valen a cualquier distancia.
-- Traslación (unos cm arriba/abajo/lados): la banda y el borde derecho se
-  re-miden en cada frame; la rejilla los sigue.
-- Vibración: suavizado que filtra el temblor pero **reengancha de golpe** si el
-  salto supera el 20% del alto del display.
-- Si `autoLocate` falla un instante (reflejo, alguien pasa), mantiene la última
-  rejilla hasta 3 s.
-- Rotación pequeña (±2–3°): la absorbe el promediado de cada segmento. Rotación
-  grande necesitaría montaje más rígido.
-
-En `/config` todo se ajusta **en vivo**. La línea de estado muestra la lectura
-cruda (`cruda "130"`) o el valor, nº de celdas y umbrales. En la imagen:
-rectángulo **tenue** = zona detectada; rectángulos **claros** = celdas.
-
-- Celdas anchas/estrechas → `asp` (probado: **0.62**).
-- Celdas juntas/separadas → `pit` (probado: **1.50**).
-- Segmentos mal → `umbral seg` (0–1). Torcidos → `inclinacion`.
-- **Guardar** para que persista al reinicio.
-
-### Si confunde cifras (3/5, 6/8...)
-
-Un segmento realmente encendido está brillante **a lo largo de todo el trazo**;
-el "sangrado" de un segmento vecino solo ilumina una punta. Por eso el segmento
-"encendido" se decide por **cobertura** (`OCR_SEG_COVERAGE` % del trazo por
-encima del umbral), no por brillo medio. Ajustes:
-
-- Sigue confundiendo → **enfoca la lente** de la OV2640 (gírala). Con la imagen
-  borrosa, un 5 y un 6 se parecen demasiado y ningún algoritmo lo arregla.
-- `OCR_SEG_COVERAGE` (`config.h`): baja a ~45 si se deja segmentos sin detectar,
-  sube a ~65 si detecta de más.
-- `umbral seg` (`onR` en `/config`).
-
-> `OCR_USE_TEMPLATES` (config.h, por defecto `0`): reconocimiento por forma
-> (plantillas aprendidas). Experimental — muy sensible a que la rejilla auto se
-> mueva. Se entrena en `/config` → "Plantillas". Déjalo en `0` salvo pruebas.
-
-### Luz ambiente
-
-Con el display a oscuras funciona directo. **Con luz de sala** el bisel blanco
-brilla como los LEDs; el detector lo descarta por su forma, pero si aún confunde
-pon **`brillo ON`** (`abr` en `/config`, o `OCR_AUTO_BRIGHT` en `config.h`) a
-**~245** → solo cuentan los LEDs. En caja fija se pone una vez.
-
-**Si el modo auto no engancha:** `auto=0` + caja manual (botones ←→↑↓).
-
----
-
-## 6. Sniffer del bus
-
-En `config.h`: `#define ENABLE_SNIFFER 1` (y `ENABLE_OCR 0`; los dos a la vez solo si
-tienes cámara y quieres compararlos). Cablea:
+En `config.h`: `#define ENABLE_SNIFFER 1`. Cablea:
 
 | Balanza (conector DIS) | | ESP32-S3 |
 |---|---|---|
@@ -395,6 +354,12 @@ tienes cámara y quieres compararlos). Cablea:
 
 No conectes `VCC_DIS`. Balanza con su batería, placa por USB-C. Ver la sección
 2 (pines del sniffer) para el detalle del diodo en la línea DA.
+
+**Corre en su propia tarea de FreeRTOS** (`weighTaskFn`, mismo núcleo que arranca el
+sniffer), separada del servidor web. Antes vivían en el mismo `loop()`: si un celular con
+mala señal dejaba a `server.handleClient()` esperando (hasta 5 s, visto en una pesca
+real), ningún pesaje se podía capturar en ese rato — a veces sin dejar ni rastro en
+`/log`. Ahora el pesaje sigue su ritmo (`WEIGH_FEED_MS`) pase lo que pase en la web.
 
 ### Comprobar que capta
 
@@ -467,7 +432,7 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
 
 ---
 
-## 7. Ficheros
+## 6. Ficheros
 
 | Fichero | Contenido |
 |---|---|
@@ -477,11 +442,10 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
 | `weighlog.h/.cpp` | máquina de estados del pesaje + buffer de los últimos pesajes + agrupación malla/BIN (NVS) |
 | `histarch.h/.cpp` | archivo permanente con **todos** los pesajes (LittleFS, solo-añadir) |
 | `diaglog.h/.cpp` | registro de diagnóstico en RAM (`/log`) |
-| `ocr7seg.h/.cpp` | cámara + análisis de segmentos (solo si `ENABLE_OCR`) |
 | `sniffer_tm1640.h/.cpp` | ISR del bus DA/SL + TM1640 (solo si `ENABLE_SNIFFER`) |
 | `web_ui.h/.cpp` | servidor web y páginas |
 
-## 8. Notas y problemas conocidos
+## 7. Notas y problemas conocidos
 
 - **Latido por Serial** (cada 5 s): `[hb] BUS valid… pesaje:… heap:libre(min …) APcli:N
   APrec:N`. `heap min` no debe bajar de forma sostenida; `APrec` debe quedarse en 0. El
@@ -489,21 +453,26 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
   el alcance usa el indicador de señal del móvil.
 - **Registro de diagnóstico `/log`** (pensado para pruebas de campo, sin cable ni Monitor
   Serie): abre `http://192.168.4.1/log` (o el enlace "Diagnóstico" al pie del panel; añade
-  `?dl=1` para descargarlo como `balanza-log.txt`). Vive en **RAM** (~16 KB, últimas 256
-  líneas): no escribe en flash ni usa el Serie, anotar una línea cuesta microsegundos y solo
-  se hace en **eventos**, nunca por muestra → no ralentiza nada. **Se borra al apagar:
-  descárgalo antes de desconectar la batería.** Abre el panel una vez tras encender para
-  que el móvil ponga la hora (si no, las líneas llevan `+123s` = segundos desde el
-  arranque). `DIAG_LOG 0` en `config.h` lo desactiva. Qué anota:
+  `?dl=1` para descargarlo como `balanza-log.txt`). Vive en **RAM** (`DIAG_LOG_LINES` × 64
+  bytes, 64 KB por defecto, últimas 1024 líneas — de una jornada real salieron ~4
+  líneas/min, así que alcanza para ~4 h seguidas): no escribe en flash ni usa el Serie,
+  anotar una línea cuesta microsegundos y solo se hace en **eventos**, nunca por muestra →
+  no ralentiza nada. **Se borra al apagar: descárgalo antes de desconectar la batería** (si
+  la jornada dura más de lo que cubre el buffer, descárgalo a mitad de camino). Abre el
+  panel una vez tras encender para que el móvil ponga la hora (si no, las líneas llevan
+  `+123s` = segundos desde el arranque). `DIAG_LOG 0` en `config.h` lo desactiva. Qué anota:
   - `ARRANQUE motivo=…`: por qué se reinició (`CAIDA-DE-TENSION` = brownout de la
     alimentación; `PANIC`/`WDT` = fallo del programa; `ENCENDIDO` = conexión normal).
   - `OK 41.3 r carga=1780 1a=520 n=31 rech=0`: pesaje guardado (peso; `r` retiro / `c`
     cambio de gaveta / `d` display cerrado; ms que estuvo puesta; ms hasta el 1er valor
-    asentado; nº de lecturas asentadas; cuántas cayeron fuera de banda).
-  - `PERDIDO(neg|cambio|cero|display) carga=… max=… min=…`: una gaveta estuvo puesta y **no
-    llegó a asentar** (no se guardó). Con `carga` (ms puesta) y `max`/`min` se ve si fue
+    asentado; nº de lecturas asentadas; cuántas cayeron fuera de banda). Si la etiqueta es
+    **`e`** (`OK 41.3 e carga=… max=… x0.92`) el valor es una **estimación** por rescate
+    (`WEIGH_RESCUE_FRAC` × máximo visto), no una lectura asentada.
+  - `PERDIDO(neg|cambio|cero|display) carga=… max=… min=… n=… r=… cap=…`: una gaveta
+    estuvo puesta y **no se guardó**. Con `carga` (ms puesta) y `max`/`min` se ve si fue
     por poco tiempo o por un peso que no paraba de moverse → sirve para afinar
-    `WEIGH_WIN_MS` / `WEIGH_BAND`.
+    `WEIGH_WIN_MS` / `WEIGH_BAND`. `cap=0`: nunca llegó a asentar; `cap>0`: asentó pero el
+    valor se descartó por inverosímil (ver `WEIGH_PLAUS_FRAC` en la sección 3).
   - `TARA …` / `DESCARTE …`: tara o cambio descartado a propósito (no es una pérdida).
   - `WIFI + cliente AB:CD` / `WIFI - cliente AB:CD motivo=N`: un móvil entra o sale de la
     red (`8` se fue él · `3` deauth · `4` inactividad · `2` autenticación expirada · `15`
@@ -512,8 +481,12 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
     internet"), no el ESP.
   - `ST cli=1 rssi[-63 ] heap=… fps=…` cada ~2 min: nº de móviles, **señal** de cada uno
     (dBm; peor que ~-80 es mala), memoria libre / mínima y refrescos por segundo del display.
-  - `BUCLE lento 143 ms (web 138 ms)`: una vuelta del programa tardó ≥ 80 ms y cuánto de eso
-    fue el servidor web; si el peso se pierde justo ahí, la causa es esa espera.
+  - `BUCLE lento 143 ms (web 138 ms)`: una vuelta de `loop()` (el servidor web, el portal
+    cautivo) tardó ≥ 80 ms y cuánto de eso fue el servidor web. El sniffer y el pesaje
+    corren en su propia tarea (ver sección 5): una espera aquí ya **no** les afecta, pero
+    si aparece muy seguido (un celular con mala señal puede hacer que `handleClient()`
+    tarde hasta 5 s de un tirón, `HTTP_MAX_DATA_WAIT` de la librería WebServer) vale la
+    pena saberlo.
   - Cabecera con contadores (pesajes guardados / perdidos / taras, conexiones, vueltas
     lentas, la más lenta).
 - **Alimentación y "SIN SEÑAL" en campo**: si el panel se queda congelado o se cae la red,
@@ -533,7 +506,5 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
 - **La red desaparece con la caja cerrada**: ver *Alimentación y montaje* (sección 2).
 - Si la placa se reinicia al conectar la WiFi (brownout), aliméntala por un
   USB-C con buena corriente.
-- Con los dos métodos activos, si el bus se decodifica con basura pon
-  `OCR_PAUSE_SNIFFER 1` en `config.h`.
 - El sniffer es de solo lectura y no perturba el bus, siempre que el cableado sea el de la
   sección 2 (resistencia + diodo en DA).

@@ -64,6 +64,9 @@ static volatile bool  rawArm = false;
 static uint32_t       rawStartMs = 0;
 
 static SnifState g_state;
+// snifLoop() (tarea del sniffer) la escribe; snifGet() la lee desde la tarea
+// del servidor web -- dos tareas distintas, por eso el portMUX (ver snifLoop).
+static portMUX_TYPE g_stateMux = portMUX_INITIALIZER_UNLOCKED;
 
 // ---------------------------------------------------------------------------
 //  ISR: flanco de SUBIDA de SL  ->  latch de 1 bit
@@ -502,15 +505,25 @@ void snifLoop() {
   decodeGroup(sh, snf.pesoAddr,   snf.pesoLen,   snf.pesoDP,   tp,  &tpv);
   decodeGroup(sh, snf.precioAddr, snf.precioLen, snf.precioDP, tpr, &tprv);
   decodeGroup(sh, snf.totalAddr,  snf.totalLen,  snf.totalDP,  tt,  &ttv);
+  // (fuera de la seccion critica: slKHzCalc/slKHzPeakCalc ya hacen su propio
+  //  noInterrupts()/interrupts(), y anidarlos dentro de portENTER_CRITICAL
+  //  reabriria las interrupciones a mitad de la seccion -- mejor calcular
+  //  antes y solo ASIGNAR a g_state ya dentro del portMUX)
+  uint32_t fn; noInterrupts(); fn = slFastN; interrupts();
+  float khz = slKHzCalc();
+  float khzPeak = slKHzPeakCalc();
+
+  portENTER_CRITICAL(&g_stateMux);
   g_state.pesoVal   = tpv;
   g_state.precioVal = tprv;
   g_state.totalVal  = ttv;
   g_state.refreshCount++;
-  g_state.txCount = g_txCount;
-  g_state.valid   = (g_state.refreshCount > 2);
-  g_state.slKHz     = slKHzCalc();
-  g_state.slKHzPeak = slKHzPeakCalc();
-  { uint32_t fn; noInterrupts(); fn = slFastN; interrupts(); g_state.slFastN = fn; }
+  g_state.txCount   = g_txCount;
+  g_state.valid     = (g_state.refreshCount > 2);
+  g_state.slKHz     = khz;
+  g_state.slKHzPeak = khzPeak;
+  g_state.slFastN   = fn;
+  portEXIT_CRITICAL(&g_stateMux);
 
   // Anti-basura: SOLO para lo visual (shadow / strings / estable).  Un frame
   // corrompido por ruido difiere de sus vecinos; se descarta.  Si hay muchos
@@ -522,20 +535,27 @@ void snifLoop() {
   differ = 0;
   memcpy(prevSh, sh, 16); havePrev = true;
 
-  memcpy(g_state.shadow, sh, 16);
-  strncpy(g_state.peso,   tp,  sizeof(g_state.peso) - 1);
-  strncpy(g_state.precio, tpr, sizeof(g_state.precio) - 1);
-  strncpy(g_state.total,  tt,  sizeof(g_state.total) - 1);
-  g_state.peso[sizeof(g_state.peso) - 1] = 0;
-  g_state.precio[sizeof(g_state.precio) - 1] = 0;
-  g_state.total[sizeof(g_state.total) - 1] = 0;
+  char newPeso[16];
+  strncpy(newPeso, tp, sizeof(newPeso) - 1); newPeso[sizeof(newPeso) - 1] = 0;
+  if (strcmp(prevPeso, newPeso) == 0) { if (stableCount < 9999) stableCount++; }
+  else { stableCount = 0; strncpy(prevPeso, newPeso, sizeof(prevPeso) - 1); }
+  bool stableNow = stableCount >= SNIF_STABLE_N;
 
-  if (strcmp(prevPeso, g_state.peso) == 0) { if (stableCount < 9999) stableCount++; }
-  else { stableCount = 0; strncpy(prevPeso, g_state.peso, sizeof(prevPeso) - 1); }
-  g_state.stable = stableCount >= SNIF_STABLE_N;
+  portENTER_CRITICAL(&g_stateMux);
+  memcpy(g_state.shadow, sh, 16);
+  strncpy(g_state.peso,   tp,  sizeof(g_state.peso) - 1);   g_state.peso[sizeof(g_state.peso) - 1] = 0;
+  strncpy(g_state.precio, tpr, sizeof(g_state.precio) - 1); g_state.precio[sizeof(g_state.precio) - 1] = 0;
+  strncpy(g_state.total,  tt,  sizeof(g_state.total) - 1);  g_state.total[sizeof(g_state.total) - 1] = 0;
+  g_state.stable = stableNow;
+  portEXIT_CRITICAL(&g_stateMux);
 }
 
-bool snifGet(SnifState& out) { out = g_state; return g_state.valid; }
+bool snifGet(SnifState& out) {
+  portENTER_CRITICAL(&g_stateMux);
+  out = g_state;
+  portEXIT_CRITICAL(&g_stateMux);
+  return out.valid;
+}
 
 void snifSetEnabled(bool en) {
   if (en && !g_enabled) {                 // al reanudar, reinicia el decodificador

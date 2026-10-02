@@ -40,7 +40,7 @@ No hace falta analizador lógico: un **ESP32 / ESP32-S3** hace de sniffer.
 | Carpeta | Placa | Qué hace |
 |---|---|---|
 | [`sniffer_tm1640/`](sniffer_tm1640/) | cualquier ESP32/ESP32-S3 (Heltec V3) | solo sniffer, vuelca la RAM del display por USB-serie. Para la ingeniería inversa del protocolo. |
-| [`peso_balanza_cam/`](peso_balanza_cam/) | **ESP32-S3 Super Mini** | **Firmware final**: sniffer del bus + historial de pesajes con mallas/BIN + panel web por WiFi. Opcionalmente (apagado por defecto) también OCR con cámara; se elige en `config.h` (`ENABLE_OCR` / `ENABLE_SNIFFER`) y lo desactivado no se compila. |
+| [`peso_balanza_cam/`](peso_balanza_cam/) | **ESP32-S3 Super Mini** | **Firmware final**: sniffer del bus + historial de pesajes con mallas/BIN + panel web por WiFi. |
 
 > Sniffer en **GPIO1 (SL) / GPIO4 (DA)**, con **diodo Schottky** en serie en DA además de la
 > resistencia de 470 Ω. Arduino IDE: "ESP32S3 Dev Module", flash 4 MB, PSRAM `Disabled`,
@@ -175,12 +175,16 @@ Opciones, en orden:
 3. Raspberry Pi Pico (~4 €) como analizador lógico con firmware sigrok
    (proyecto *pico logic analyzer*), más fácil de conseguir que un Saleae.
 
-## Último recurso: cámara + TinyML
+## Último recurso: cámara + OCR
 
-Solo si no se puede interceptar el bus. ESP32-CAM S3 fijo frente al display,
-exposición bloqueada, recorte de ROI por dígito, CNN de 11 clases, validación
-por varios fotogramas. (`peso_balanza_cam/` ya incluye un OCR clásico de 7 segmentos,
-sin TinyML, desactivado por defecto: `ENABLE_OCR 0`.)
+Se probó leer el display por cámara (7 segmentos clásico) antes de pasar al sniffer, y
+se descartó: el sniffer da el valor **exacto** desde el propio bus, sin depender de luz
+ni encuadre, así que es el único método que queda en `peso_balanza_cam/`. Si hiciera
+falta recuperar el enfoque por cámara, está en el historial de git (commits anteriores
+a la limpieza de 2026-10-01). Si no se puede interceptar el bus en una balanza distinta,
+la idea seguiría siendo válida: ESP32-CAM fijo frente al display, exposición bloqueada,
+recorte de ROI por dígito, validación por varios fotogramas (y, si los dígitos confunden
+3/5/6/8/9, una CNN entrenada en vez de la decodificación por segmentos).
 
 ## Licencia
 

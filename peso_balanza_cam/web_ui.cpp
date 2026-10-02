@@ -1,7 +1,7 @@
 // ===========================================================================
 //  web_ui.cpp  -  Servidor web:  panel + historial + calibracion + bus
 //
-//  Rutas (cam solo si ENABLE_OCR, bus solo si ENABLE_SNIFFER):
+//  Rutas (las de bus solo si ENABLE_SNIFFER):
 //    /                 panel
 //    /api              JSON estado en vivo (poll 1 s)
 //    /weighings        JSON historial de pesajes capturados
@@ -9,16 +9,13 @@
 //    /weighings/clear  POST -> borra el historial
 //    /log              registro de diagnostico (?dl=1 lo descarga)
 //    /targets         ?malla=200&bin=800 -> pone los objetivos de agrupacion
-//    /snapshot.jpg     foto actual (gris)                          [OCR]
-//    /ocr_debug.jpg    foto con las zonas dibujadas                [OCR]
 //    /sniffer          16 bytes de RAM del display                 [SNIFFER]
 //    /sniffer/raw      volcado crudo de flancos                    [SNIFFER]
-//    /config           calibracion
+//    /config           calibracion (mapa del sniffer)
 // ===========================================================================
 #include "web_ui.h"
 #include "config.h"
 #include "seg7.h"
-#include "ocr7seg.h"
 #include "sniffer_tm1640.h"
 #include "weighlog.h"
 #include "diaglog.h"
@@ -800,9 +797,7 @@ static void handleRoot() {
 }
 
 static void handleApi() {
-  OcrResult o; ocrGetLast(o);
   SnifState s; snifGet(s);
-  const bool ocrEn  = ENABLE_OCR;
   const bool snifEn = ENABLE_SNIFFER;
   float    latched = weighLatched();
   int      wc = weighCount();          // pesajes NO borrados
@@ -810,21 +805,9 @@ static void handleApi() {
   float comb = NAN; const char* src = "sin dato";
   if      (!isnan(latched))                        { comb = latched;   src = "ultimo pesaje"; }
   else if (snifEn && s.valid && !isnan(s.pesoVal)) { comb = s.pesoVal; src = "bus (en vivo)"; }
-  else if (o.valid)                                { comb = o.value;   src = "camara (en vivo)"; }
 
-  int agree = -1;
-  if (o.valid && s.valid && !isnan(s.pesoVal))
-    agree = (fabsf(o.value - s.pesoVal) <= 0.05f) ? 1 : 0;
-
-  String h; h.reserve(1600);
-  h += "{\"ocr\":{\"enabled\":"; h += ocrEn ? "true" : "false";
-  h += ",\"valid\":"; h += o.valid ? "true" : "false";
-  h += ",\"value\":"; h += o.valid ? String(o.value, 2) : String("null");
-  h += ",\"raw\":\""; h += o.text; h += "\",\"ncell\":"; h += (int)o.ncell;
-  h += ",\"thr\":"; h += o.thr; h += ",\"autothr\":"; h += o.autoThr;
-  h += ",\"bmin\":"; h += o.bMin; h += ",\"bmax\":"; h += o.bMax;
-  h += ",\"wstate\":\""; h += weighStateName(); h += "\",\"tplmask\":"; h += ocrTemplatesMask();
-  h += "},\"sniffer\":{\"enabled\":"; h += snifEn ? "true" : "false";
+  String h; h.reserve(1300);
+  h += "{\"sniffer\":{\"enabled\":"; h += snifEn ? "true" : "false";
   h += ",\"valid\":"; h += s.valid ? "true" : "false";
   h += ",\"stable\":"; h += s.stable ? "true" : "false";
   h += ",\"peso\":\""; h += s.peso; h += "\",\"precio\":\""; h += s.precio;
@@ -870,7 +853,6 @@ static void handleApi() {
     h += ",\"n\":";              h += (unsigned long)ai.stored;
     h += "}";
   }
-  h += ",\"agree\":"; h += (agree < 0 ? "null" : (agree ? "true" : "false"));
   h += ",\"capstate\":\""; h += weighStateName(); h += "\"";
   h += ",\"rssi\":"; h += (int)WiFi.RSSI();
   h += ",\"uptime\":"; h += (unsigned long)(millis() / 1000);
@@ -1059,19 +1041,6 @@ static void handleLog() {
   if (!c.dead && c.buf.length()) S->sendContent(c.buf);
   S->sendContent("");
 }
-
-#if ENABLE_OCR
-static void sendJpeg(bool debug) {
-  uint8_t* buf = nullptr; size_t len = 0;
-  bool ok = debug ? ocrJpegDebug(&buf, &len) : ocrJpegSnapshot(&buf, &len);
-  if (!ok || !buf) { S->send(503, "text/plain", "sin imagen"); return; }
-  S->sendHeader("Cache-Control", "no-store");
-  S->setContentLength(len);
-  S->send(200, "image/jpeg", "");
-  S->sendContent((const char*)buf, len);
-  free(buf);
-}
-#endif  // ENABLE_OCR
 
 // --------------------------------------------------------------------------
 #if ENABLE_SNIFFER
@@ -1290,67 +1259,11 @@ static void handleSnifRaw() {
 
 // --------------------------------------------------------------------------
 static int   argI(const char* k, int def)   { return S->hasArg(k) ? S->arg(k).toInt()   : def; }
-static float argF(const char* k, float def) { return S->hasArg(k) ? S->arg(k).toFloat() : def; }
 
 static void field(String& h, const char* name, const String& val, const char* label, int width = 90) {
   h += "<label>"; h += label; h += "</label><input name="; h += name;
   h += " style=width:"; h += width; h += "px value='"; h += val; h += "'>";
 }
-
-#if ENABLE_OCR
-// lee los campos del formulario OCR -> ocr.*  (sin guardar en NVS)
-static void applyOcrFormArgs() {
-  ocr.autoMode    = argI("auto", ocr.autoMode ? 1 : 0) != 0;
-  ocr.digitAspect = argF("asp",  ocr.digitAspect);
-  ocr.digitPitch  = argF("pit",  ocr.digitPitch);
-  ocr.autoBright  = argI("abr",  ocr.autoBright);
-  ocr.boxX = argI("boxX", ocr.boxX);   ocr.boxY = argI("boxY", ocr.boxY);
-  ocr.boxW = argI("boxW", ocr.boxW);   ocr.boxH = argI("boxH", ocr.boxH);
-  ocr.digitGap    = argI("gap",  ocr.digitGap);
-  ocr.slant       = argF("slant", ocr.slant);
-  ocr.onRatio     = argF("onR",  ocr.onRatio);
-  ocr.minContrast = argI("minC", ocr.minContrast);
-  ocr.numDigits   = argI("nd",   ocr.numDigits);
-  ocr.decimals    = argI("dec",  ocr.decimals);
-  ocr.aecValue    = argI("aec",  ocr.aecValue);
-  ocr.contrast    = argI("cont", ocr.contrast);
-  ocr.flashLed    = argI("flash", ocr.flashLed ? 1 : 0) != 0;
-  if (ocr.numDigits < 1) ocr.numDigits = 1;
-  if (ocr.numDigits > 8) ocr.numDigits = 8;
-  if (ocr.decimals < 0)  ocr.decimals = 0;
-  if (ocr.decimals > 4)  ocr.decimals = 4;
-  if (ocr.digitAspect < 0.2f) ocr.digitAspect = 0.2f;
-  if (ocr.digitAspect > 1.2f) ocr.digitAspect = 1.2f;
-  if (ocr.digitPitch  < 1.0f) ocr.digitPitch  = 1.0f;
-  if (ocr.digitPitch  > 3.0f) ocr.digitPitch  = 3.0f;
-  if (ocr.boxW < 10) ocr.boxW = 10;
-  if (ocr.boxH < 10) ocr.boxH = 10;
-}
-
-// vista previa en vivo: aplica los cambios a RAM y responde (no toca NVS)
-static void handleOcrLive() {
-  int oldAec = ocr.aecValue, oldCont = ocr.contrast;
-  applyOcrFormArgs();
-  if (ocr.aecValue != oldAec || ocr.contrast != oldCont) ocrApplyCam();
-  S->send(200, "text/plain", "ok");
-}
-
-// aprender plantillas:  /ocr_learn?d=6.50   o   /ocr_learn?clear=1
-static void handleOcrLearn() {
-  if (S->hasArg("clear")) { ocrTemplatesClear(); S->send(200, "text/plain", "plantillas borradas"); return; }
-  if (!S->hasArg("d") || S->arg("d").length() == 0) {
-    S->send(200, "text/plain", "escribe el valor que se ve ahora (ej 6.50)"); return;
-  }
-  int r = ocrLearn(S->arg("d").c_str());
-  char m[72];
-  if      (r > 0)  snprintf(m, sizeof(m), "OK: %d cifra(s) aprendida(s)", r);
-  else if (r == -1) snprintf(m, sizeof(m), "ERROR: escribiste mas cifras de las celdas que veo");
-  else if (r == -2) snprintf(m, sizeof(m), "ERROR: ahora mismo no localizo el display");
-  else if (r == -3) snprintf(m, sizeof(m), "ERROR: pon solo el numero (ej 6.50)");
-  else              snprintf(m, sizeof(m), "ERROR (%d)", r);
-  S->send(200, "text/plain", m);
-}
-#endif
 
 static void handleConfigGet() {
   String h; h.reserve(9000);
@@ -1365,56 +1278,6 @@ static void handleConfigGet() {
          "button{padding:6px 12px;margin:2px;background:#2a2a2a;color:#eee;border:1px solid #666;border-radius:6px;cursor:pointer}"
          "a{color:#64b5f6}legend{color:#aaa}</style>");
   h += "<form method=post>";
-
-#if ENABLE_OCR
-  {
-    h += F("<h3>Calibracion OCR</h3><img id=dbg src=/ocr_debug.jpg>");
-    h += F("<div style=margin:6px 0>"
-           "<button type=button onclick=r()>refrescar</button> &nbsp;"
-           "<button type=button onclick=\"n('boxX',-5)\">&larr;</button>"
-           "<button type=button onclick=\"n('boxX',5)\">&rarr;</button> "
-           "<button type=button onclick=\"n('boxY',-5)\">&uarr;</button>"
-           "<button type=button onclick=\"n('boxY',5)\">&darr;</button> &nbsp;"
-           "<button type=button onclick=\"n('boxW',-5)\">ancho-</button>"
-           "<button type=button onclick=\"n('boxW',5)\">ancho+</button> "
-           "<button type=button onclick=\"n('boxH',-5)\">alto-</button>"
-           "<button type=button onclick=\"n('boxH',5)\">alto+</button></div>");
-    h += F("<p>Lectura OCR: <b id=rd>--</b></p>");
-    h += F("<fieldset><legend>Localizacion</legend>");
-    field(h, "auto", String(ocr.autoMode ? 1 : 0), "auto (1=busca sola)");
-    field(h, "nd",   String(ocr.numDigits),        "n digitos (max)");
-    field(h, "dec",  String(ocr.decimals),         "decimales");
-    field(h, "slant",String(ocr.slant, 3),         "inclinacion");
-    h += F("<br><small style=color:#999>auto=1: no hace falta encuadrar. "
-           "asp = ancho de digito / alto ; pit = separacion entre digitos.</small><br>");
-    field(h, "asp",  String(ocr.digitAspect, 2),   "asp (ancho/alto)");
-    field(h, "pit",  String(ocr.digitPitch, 2),    "pit (separacion)");
-    h += F("</fieldset><fieldset><legend>Caja manual (solo si auto=0)</legend>");
-    field(h, "boxX", String(ocr.boxX), "boxX");
-    field(h, "boxY", String(ocr.boxY), "boxY");
-    field(h, "boxW", String(ocr.boxW), "boxW");
-    field(h, "boxH", String(ocr.boxH), "boxH");
-    field(h, "gap",  String(ocr.digitGap), "separacion");
-    h += F("</fieldset><fieldset><legend>Deteccion y camara</legend>");
-    field(h, "onR",  String(ocr.onRatio, 2),       "umbral seg 0..1");
-    field(h, "minC", String(ocr.minContrast),      "contraste min");
-    field(h, "abr",  String(ocr.autoBright),       "brillo ON (0=auto)");
-    field(h, "aec",  String(ocr.aecValue),         "exposicion");
-    field(h, "cont", String(ocr.contrast),         "contraste cam");
-    field(h, "flash",String(ocr.flashLed ? 1 : 0), "flash LED");
-    h += F("</fieldset>"
-           "<fieldset><legend>Plantillas (reconocimiento por forma)</legend>"
-           "<div id=tplinfo style=font-size:13px;color:#999>cargando...</div>"
-           "<p style=font-size:13px;color:#999>Pon un peso, mira que numero marca, "
-           "escribelo aqui y pulsa Aprender.  Repite con varios pesos hasta cubrir "
-           "las 10 cifras (0-9).  Ej: 6.50 -> aprende 6, 5 y 0.</p>"
-           "<input id=tplshown placeholder='ej 6.50' style=width:120px>"
-           "<button type=button onclick=aprender()>Aprender</button> "
-           "<button type=button onclick=olvidar()>Olvidar todas</button>"
-           "<div id=tplmsg style=font-size:13px;color:#7fdb7f;margin-top:4px></div>"
-           "</fieldset>");
-  }
-#endif
 
 #if ENABLE_SNIFFER
   {
@@ -1438,44 +1301,10 @@ static void handleConfigGet() {
 
   h += F("<button type=submit>Guardar (para que sobreviva al reinicio)</button> "
          "&nbsp; <a href=/>volver</a></form>");
-  h += F("<script>function r(){var d=document.getElementById('dbg');"
-         "if(d)d.src='/ocr_debug.jpg?'+Date.now();}");
-#if ENABLE_OCR
-  h += F("function live(){var q=new URLSearchParams(new FormData(document.forms[0])).toString();"
-         "fetch('/ocr_live?'+q).then(r).catch(function(){});}"
-         "function n(k,d){var e=document.getElementsByName(k)[0];"
-         "e.value=(parseInt(e.value)||0)+d;live();}"
-         "document.querySelectorAll('form input').forEach(function(el){el.addEventListener('change',live);});"
-         "async function poll(){try{var j=await (await fetch('/api',{cache:'no-store'})).json();"
-         "var t=j.ocr.valid?('VALOR '+Number(j.ocr.value).toFixed(2)):('cruda \"'+(j.ocr.raw||'')+'\"');"
-         "document.getElementById('rd').textContent=t+'   -   '+j.ocr.ncell+' celdas, "
-         "umbral seg '+j.ocr.thr+' / auto '+j.ocr.autothr+', brillo '+j.ocr.bmin+'-'+j.ocr.bmax;"
-         "}catch(e){}}"
-         "function tplRefresh(){fetch('/api',{cache:'no-store'}).then(function(x){return x.json();}).then(function(j){"
-         "var m=j.ocr.tplmask||0,hay=[],falta=[];for(var d=0;d<10;d++){(m&(1<<d)?hay:falta).push(d);}"
-         "document.getElementById('tplinfo').textContent="
-         "(m==0?'sin plantillas -> se leen por 7 segmentos':"
-         "('aprendidas: '+hay.join(' ')+(falta.length?('    faltan: '+falta.join(' ')):'    (todas! listo)')));"
-         "}).catch(function(){});}"
-         "function aprender(){var v=document.getElementById('tplshown').value;"
-         "fetch('/ocr_learn?d='+encodeURIComponent(v)).then(function(x){return x.text();}).then(function(t){"
-         "document.getElementById('tplmsg').textContent=t;tplRefresh();r();});}"
-         "function olvidar(){if(confirm('Borrar TODAS las plantillas?'))"
-         "fetch('/ocr_learn?clear=1').then(function(x){return x.text();}).then(function(t){"
-         "document.getElementById('tplmsg').textContent=t;tplRefresh();});}"
-         "setInterval(function(){r();poll();tplRefresh();},2000);r();poll();tplRefresh();");
-#else
-  h += F("function n(){}setInterval(r,2000);");
-#endif
-  h += F("</script>");
   S->send(200, "text/html", h);
 }
 
 static void handleConfigPost() {
-#if ENABLE_OCR
-  applyOcrFormArgs();
-  ocrSaveParams();            // aplica al sensor + guarda en NVS
-#endif
 #if ENABLE_SNIFFER
   {
     Preferences pr;
@@ -1510,12 +1339,6 @@ void webBegin(WebServer& srv) {
   S->on("/info",            handleSetInfo);           // ?sector=A&piscina=12
   S->on("/settime",         handleSetTime);
   S->on("/log",             handleLog);                 // diagnostico (?dl=1 lo descarga)
-#if ENABLE_OCR
-  S->on("/ocr_live",        handleOcrLive);
-  S->on("/ocr_learn",       handleOcrLearn);
-  S->on("/snapshot.jpg",    []() { sendJpeg(false); });
-  S->on("/ocr_debug.jpg",   []() { sendJpeg(true);  });
-#endif
 #if ENABLE_SNIFFER
   S->on("/sniffer",        handleSniffer);
   S->on("/snif.json",      handleSnifJson);

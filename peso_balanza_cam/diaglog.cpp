@@ -12,8 +12,11 @@ DiagCounters g_diagCnt = {};
 #include <esp_system.h>
 #include "freertos/FreeRTOS.h"
 
-#define DIAG_LINES 256          // lineas que se conservan (las mas recientes)
-#define DIAG_LEN   64           // caracteres por linea, con la hora incluida
+#ifndef DIAG_LOG_LINES
+#define DIAG_LOG_LINES 1024     // config.h lo puede ajustar (costo: *64 bytes de RAM)
+#endif
+#define DIAG_LINES DIAG_LOG_LINES   // lineas que se conservan (las mas recientes)
+#define DIAG_LEN   64               // caracteres por linea, con la hora incluida
 
 static char         s_lines[DIAG_LINES][DIAG_LEN];
 static uint16_t     s_head  = 0;

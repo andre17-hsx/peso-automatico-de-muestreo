@@ -45,21 +45,12 @@
 #define TZ_POSIX         "<-05>5"
 
 // ===========================================================================
-//  MODO DE PRUEBA  -  elige que metodo(s) compilar
-// ===========================================================================
-//    ENABLE_OCR      ENABLE_SNIFFER     resultado
-//    -----------     -------------      --------------------------------------
-//        1                0             SOLO camara (no hay que soldar nada)  <= empieza por aqui
-//        0                1             SOLO sniffer del bus DA/SL
-//        1                1             los dos, y el panel web los compara
-//
-//  Lo que queda desactivado NI se compila NI reserva pines/RAM.
-#define ENABLE_OCR       0
-#define ENABLE_SNIFFER   1
-
-// ===========================================================================
 //  SNIFFER del bus del display  (TM1640 / CS2540 ,  DA = datos , SL = reloj)
 // ===========================================================================
+//  Interruptor general: 0 lo apaga por completo (ni se compila ni reserva
+//  pines/RAM).  No hay otro metodo de lectura; esto es solo para pruebas del
+//  panel web sin la balanza conectada.
+#define ENABLE_SNIFFER   1
 //  Pines a evitar en el ESP32-S3 Super Mini (esta placa NO tiene conector de
 //  camara ni de microSD, asi que ese bloqueo de la placa anterior ya no
 //  aplica -- lo que queda es del SILICIO del chip, vale para cualquier placa):
@@ -112,7 +103,7 @@
 #define SNIF_SEG_BIT     { 0, 1, 2, 3, 4, 5, 6, 7 }
 
 // ===========================================================================
-//  CAPTURA DE PESAJES  (maquina de estados comun a sniffer y OCR)
+//  CAPTURA DE PESAJES  (maquina de estados del pesaje)
 // ===========================================================================
 //  Escenario: el operario sube la gaveta -> el peso se estabiliza -> quita la
 //  gaveta -> vuelve a ~0  =>  se guarda.  UNA entrada por gaveta.
@@ -126,7 +117,7 @@
 //  puestos para kg; al pasar a LIBRAS (numeros ~2.2x mas chicos) hay que
 //  bajarlos, si no los pesos livianos no se detectan bien.
 #define WEIGH_ZERO_THRESH   0.06f   // por debajo de esto = plataforma vacia (en lb)
-#define WEIGH_STABLE_MS     700     // (solo OCR) numero quieto este tiempo -> estable
+#define WEIGH_STABLE_MS     700     // (solo con WEIGH_PLATEAU 0) numero quieto este tiempo -> estable
 #define WEIGH_CONFIRM_MS    1000    // tras vaciarse la plataforma, se comprueba
                                     //   este tiempo si fue retiro real antes de guardar
 #define WEIGH_PARTIAL       0.085f  // el peso tiene que haber bajado AL MENOS esto (lb)
@@ -183,6 +174,22 @@
 #define WEIGH_TOL_PCT      3.0f     // ... o este % de ella, lo que sea MAYOR
 #define WEIGH_PLACE_MS     1000     // fase de colocacion: la referencia puede subir
 
+//  El valor asentado manda siempre, salvo que DESPUES de la ultima vez que se dio por
+//  asentado el peso suba por encima de valor / WEIGH_PLAUS_FRAC: entonces era una pausa
+//  en mitad de la colocacion (caso real: 5.3 lb) y se descarta (PERDIDO, cap>0 en /log).
+//  Un golpe al poner no lo activa (su pico es anterior al valor asentado).  0 = desactivado.
+#define WEIGH_PLAUS_FRAC   0.7f
+
+//  RESCATE: una gaveta que se RETIRO de verdad pero no dejo ningun valor asentado valido
+//  (nunca asento, o se descarto por el chequeo de arriba) no se pierde: se guarda
+//  WEIGH_RESCUE_FRAC x el maximo visto, marcada "e" (ESTIMADO) en /log.  Solo si estuvo
+//  puesta >= WEIGH_RESCUE_MIN_MS, su maximo es >= WEIGH_RESCUE_MIN_LB (descarta roces de
+//  la mano) y el peso bajo por intermedios tras el maximo (una tara no cuenta).
+//  WEIGH_RESCUE_FRAC 0 = desactivado.
+#define WEIGH_RESCUE_FRAC    0.92f
+#define WEIGH_RESCUE_MIN_LB  15.0f
+#define WEIGH_RESCUE_MIN_MS  600
+
 // --- registro de diagnostico (/log) ---
 //  Guarda en RAM (no en flash) los ultimos eventos: pesajes guardados/descartados y
 //  por que, conexiones/desconexiones de celulares con su señal, bloqueos del bucle
@@ -190,96 +197,11 @@
 //  Se pierde si el ESP se reinicia o se apaga: descargalo antes.  0 = desactivado.
 #define DIAG_LOG           1
 
-// ===========================================================================
-//  OCR de 7 segmentos  (pantalla PESO vista por la camara)
-// ===========================================================================
-#define OCR_FRAMESIZE     FRAMESIZE_VGA   // 640 x 480 en escala de grises
-#define OCR_NUM_DIGITS    5               // digitos de la pantalla PESO
-#define OCR_DECIMALS      2               // 17.20 -> 2 decimales (punto fijo)
+//  Cuantas lineas (eventos) conserva el registro en RAM; al llenarse, se va
+//  borrando la mas vieja.  Cada linea pesa 64 bytes fijos (ver diaglog.cpp),
+//  asi que el costo en RAM es DIAG_LOG_LINES*64.  De una jornada real (pesca
+//  2026-09-30, ~75 min) salieron ~4 lineas/min -> con 1024 alcanza para unas
+//  4 horas seguidas antes de empezar a perder las mas antiguas; si una
+//  jornada dura mas, descarga /log a mitad de camino.
+#define DIAG_LOG_LINES     1024
 
-//  --- Ritmo de lectura de la camara -------------------------------------
-//  La lectura corre en su PROPIA tarea (nucleo 0), independiente del servidor
-//  web: aunque el video del navegador vaya lento, esto sigue leyendo rapido.
-//  (La captura de pesajes usa los parametros WEIGH_* de mas arriba.)
-#define OCR_PERIOD_MS     200      // una lectura cada 200 ms  (~5 por segundo)
-
-//  1 = detiene el sniffer mientras la camara captura.  En la S3 el periferico
-//  LCD_CAM casi no sufre por las interrupciones, asi que normalmente sobra;
-//  ponlo a 1 solo si al activar el OCR el bus se decodifica con basura.
-#define OCR_PAUSE_SNIFFER 0
-
-//  --- Localizacion de los digitos ---------------------------------------
-//  OCR_AUTO 1 = la camara busca sola donde estan los 7-seg dentro del video;
-//               NO hace falta encuadrarlos en una caja.  Funciona porque los
-//               LEDs encendidos son lo mas brillante y estan sobre fondo negro.
-//  OCR_AUTO 0 = usa la caja manual de abajo (se calibra en /config).
-#define OCR_AUTO         1
-#define OCR_DIGIT_ASPECT 0.62f           // ancho de un digito = alto de la banda * esto
-#define OCR_DIGIT_PITCH  1.50f           // separacion entre digitos  = ancho digito * esto
-
-//  --- Segmento "encendido": por COBERTURA, no por brillo medio -----------
-//  Un segmento realmente encendido esta brillante a lo LARGO de todo el trazo;
-//  el "sangrado" de un segmento vecino solo ilumina una punta.  Se cuenta el
-//  % del trazo que supera el umbral.  Esto es lo que arregla 3 vs 5, 6 vs 8...
-#define OCR_SEG_COVERAGE 55             // % del trazo encendido para contar "ON"
-
-//  --- Reconocimiento por PLANTILLA (experimental, DESACTIVADO) ------------
-//  Compara la forma completa del digito.  En teoria no confunde 3/5/6/8/9,
-//  pero es MUY sensible a que la rejilla auto se mueva 1-2 px.  Deja 0 salvo
-//  que quieras experimentar (se ensena en /config, seccion "Plantillas").
-#define OCR_USE_TEMPLATES 0
-#define OCR_TPL_W        14
-#define OCR_TPL_H        22
-#define OCR_TPL_MIN_NCC  0.60f
-#define OCR_TPL_MARGIN   0.06f
-
-//  OCR_AUTO_BRIGHT: nivel (0..255) a partir del cual un pixel cuenta como
-//  "encendido".  0 = automatico (casi saturado).  Con LUZ AMBIENTE el bisel
-//  blanco tambien satura; si estorba, fijalo a mano ~245 (aqui o en /config
-//  campo "brillo ON") para que solo cuenten los LEDs del display.
-#define OCR_AUTO_BRIGHT  0
-//  Distancia (px) a la que busca "negro" alrededor de un trazo.  Subelo si los
-//  digitos se ven MUY grandes (camara muy cerca); bajalo si muy pequenos.
-#define OCR_DARK_DIST    12
-
-//  Caja manual (px) - solo se usa si OCR_AUTO 0.  Se calibra en /config.
-#define OCR_BOX_X        100
-#define OCR_BOX_Y        150
-#define OCR_BOX_W        440
-#define OCR_BOX_H        180
-#define OCR_DIGIT_GAP    6               // separacion entre celdas (px)
-#define OCR_SLANT        0.10f           // inclinacion de los digitos (0 = recto)
-#define OCR_ON_RATIO     0.45f           // umbral segmento = min + (max-min) * ratio
-#define OCR_MIN_CONTRAST 35              // si (max-min) < esto -> display apagado
-
-//  Camara: exposicion/ganancia MANUAL para que el brillo no cambie solo
-#define OCR_AEC_VALUE    400             // exposicion 0..1200 (sube si oscuro)
-#define OCR_CONTRAST     2               // -2..2
-
-//  Esta placa no trae LED de flash (el display ya emite luz propia).
-//  Si conectas uno a un GPIO libre, ponlo aqui; -1 = desactivado.
-#define OCR_FLASH_PIN    -1
-
-// --------------------------------------------------------------------------
-//  PINES DE LA CAMARA  (conector FFC)
-// --------------------------------------------------------------------------
-//  VALORES POR DEFECTO = pinout ESP32-S3-EYE, que es el que copian casi todas
-//  las placas "ESP32-S3-WROOM CAM" genericas.  Si la camara no inicializa
-//  (esp_camera_init fallo 0x...), busca el pinout EXACTO de tu placa (pagina
-//  del vendedor / esquematico) y corrige estos numeros.
-#define CAM_PIN_PWDN    -1
-#define CAM_PIN_RESET   -1
-#define CAM_PIN_XCLK    15
-#define CAM_PIN_SIOD     4      // SCCB SDA
-#define CAM_PIN_SIOC     5      // SCCB SCL
-#define CAM_PIN_D7      16      // Y9
-#define CAM_PIN_D6      17      // Y8
-#define CAM_PIN_D5      18      // Y7
-#define CAM_PIN_D4      12      // Y6
-#define CAM_PIN_D3      10      // Y5
-#define CAM_PIN_D2       8      // Y4
-#define CAM_PIN_D1       9      // Y3
-#define CAM_PIN_D0      11      // Y2
-#define CAM_PIN_VSYNC    6
-#define CAM_PIN_HREF     7
-#define CAM_PIN_PCLK    13

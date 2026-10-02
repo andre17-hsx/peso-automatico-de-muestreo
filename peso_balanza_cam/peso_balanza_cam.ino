@@ -1,28 +1,27 @@
 /*
  * ===========================================================================
- *  peso_balanza_cam  -  Lee el PESO de la balanza cuenta-precio de 2 formas
- *                       y lo publica por WiFi (servidor web).
+ *  peso_balanza_cam  -  Lee el PESO de la balanza cuenta-precio interceptando
+ *                       el bus de su display y lo publica por WiFi (panel web).
  * ===========================================================================
  *
  *  Placa:   ESP32-S3 Super Mini  (chip ESP32-S3FH4R2: 4MB flash + 2MB PSRAM Quad,
  *           un solo USB-C nativo -- SIN chip CH340).
  *           (antes: DOIT ESP32-S3-WROOM N16R8 con FFC de camara; se cambio de
- *            modulo por daño de hardware, ver notas de cableado mas abajo)
+ *            modulo por daño de hardware.  Tambien se probo leer el display por
+ *            camara/OCR -- ver el historial de git si hace falta recuperarlo --
+ *            pero se descarto: el sniffer del bus da el valor EXACTO sin
+ *            depender de luz/encuadre, asi que es lo unico que queda)
  *  Balanza: ACS-JC36CV28  -->  display WP-91110-2540-V7 (chip CS2540 == TM1640)
  *
- *  METODO 1 - OCR con la camara  (ENABLE_OCR):
- *     fotografia la pantalla PESO en escala de grises y decodifica los 7
- *     segmentos de cada digito.  NO hay que soldar ni abrir la balanza.
- *
- *  METODO 2 - Sniffer del bus del display  (ENABLE_SNIFFER):
+ *  Sniffer del bus del display  (ENABLE_SNIFFER en config.h):
  *     escucha pasiva de DA (datos) y SL (reloj), decodifica el protocolo tipo
  *     TM1640 y reconstruye los 16 bytes de RAM -> PESO / PRECIO / TOTAL exactos.
- *
- *  Se elige uno, otro o los dos en config.h (ENABLE_OCR / ENABLE_SNIFFER).
- *  Lo desactivado no se compila.  El servidor web muestra lo que este activo.
+ *     Corre en su PROPIA tarea de FreeRTOS (ver weighTaskFn mas abajo), asi que
+ *     nunca se frena aunque el servidor web se quede esperando a un celular
+ *     lento (WebServer puede tardar hasta 5 s en un cliente que no contesta).
  *
  * ---------------------------------------------------------------------------
- *  CONEXION DEL SNIFFER  (solo si ENABLE_SNIFFER, 3 cables)  -- ver config.h
+ *  CONEXION DEL SNIFFER  (3 cables)  -- ver config.h
  * ---------------------------------------------------------------------------
  *     Balanza SL   --- [470 ohm] ------------------  GPIO1  (SNIF_PIN_SL)
  *     Balanza DA   --- [470 ohm] --- [diodo Schottky] --- GPIO4  (SNIF_PIN_DA)
@@ -45,8 +44,7 @@
  *  ARDUINO IDE   (chip ESP32-S3FH4R2 -- 4MB flash, 2MB PSRAM Quad)
  * ---------------------------------------------------------------------------
  *     Placa:              "ESP32S3 Dev Module"  (generico, sirve para esta placa)
- *     PSRAM:              "Disabled" (no se usa: la camara/OCR esta apagada,
- *                          que era lo unico que la necesitaba) o "QSPI PSRAM"
+ *     PSRAM:              "Disabled" (nada en este firmware la necesita)
  *     Flash Size:         "4MB (32Mb)"
  *     Partition Scheme:   uno pensado para 4MB que INCLUYA SPIFFS: ahi
  *                          (LittleFS) se guarda el historial COMPLETO de
@@ -73,7 +71,6 @@
 #include <stdlib.h>
 
 #include "config.h"
-#include "ocr7seg.h"
 #include "sniffer_tm1640.h"
 #include "weighlog.h"
 #include "diaglog.h"
@@ -224,6 +221,43 @@ static void loopTiming(uint32_t loopUs, uint32_t webUs) {
 }
 #endif   // DIAG_LOG
 
+// ---------------------------------------------------------------------------
+//  Tarea del pesaje: sniffer + maquina de estados del pesaje, en su PROPIA
+//  tarea de FreeRTOS -- ya NO viven dentro de loop().  Motivo (visto en campo,
+//  /log real): server.handleClient() puede tardar hasta HTTP_MAX_DATA_WAIT
+//  (5000 ms, WebServer.h) si un celular abre conexion y tarda en mandar datos;
+//  mientras tanto, ANTES, nadie llamaba a snifLoop()/weighFeed() porque
+//  estaban justo despues en el mismo loop() -- una gaveta puesta en esos 5 s
+//  se podia perder entera, a veces sin dejar ni rastro en el registro.
+//  Esta tarea se deja en el MISMO nucleo que arma el sniffer (setup(), nucleo
+//  de Arduino) para que isrSlRise/isrDaChange sigan siendo del mismo nucleo
+//  que las lee (snifLoop) -- asi el noInterrupts()/interrupts() que ya tenia
+//  sniffer_tm1640.cpp para leer g_shadow[] sigue siendo valido tal cual, sin
+//  tocar el ISR.  Lo que SI hacia falta (y se añadio en sniffer_tm1640.cpp)
+//  es proteger con un portMUX la estructura SnifState completa: antes la
+//  escribia snifLoop() y la leia la web SIEMPRE en el mismo hilo (nunca a la
+//  vez); ahora son dos tareas distintas y pueden solaparse.
+#if ENABLE_SNIFFER
+#ifndef WEIGH_FEED_MS
+#define WEIGH_FEED_MS 20
+#endif
+static void weighTaskFn(void*) {
+  uint32_t tw = 0;
+  for (;;) {
+    snifLoop();
+    // cada WEIGH_FEED_MS (config.h, 20 ms ~= 50 Hz): mas muestras = pilla
+    // mejor el transitorio al retirar la gaveta rapido.
+    if (millis() - tw >= WEIGH_FEED_MS) {
+      tw = millis();
+      SnifState s; snifGet(s);
+      weighFeed(s.pesoVal, s.precioVal, s.totalVal,
+                s.stable, s.valid && !isnan(s.pesoVal));
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));     // cede CPU; el ritmo real lo marca WEIGH_FEED_MS arriba
+  }
+}
+#endif
+
 //  llamado cada 5 s desde el heartbeat que ya existia en loop() (ver mas abajo)
 static void wifiCheckHealth() {
 #if WIFI_MODE == 0
@@ -307,11 +341,10 @@ static void wifiConnect() {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  setCpuFrequencyMhz(240);                      // maximo: camara + captura del bus
+  setCpuFrequencyMhz(240);                      // maximo: captura del bus + servidor web
   setenv("TZ", TZ_POSIX, 1); tzset();           // hora local para MOSTRAR (se guarda en UTC)
   Serial.println("\n=== Peso automatico de muestreo (ESP32-S3) ===");
-  Serial.printf("[modo] OCR=%d  SNIFFER=%d  WIFI_MODE=%d\n",
-                ENABLE_OCR, ENABLE_SNIFFER, WIFI_MODE);
+  Serial.printf("[modo] SNIFFER=%d  WIFI_MODE=%d\n", ENABLE_SNIFFER, WIFI_MODE);
 
   diagBegin();                         // registro /log: anota el motivo del ultimo reinicio
   weighBegin();                        // recupera el historial guardado en NVS
@@ -320,16 +353,8 @@ void setup() {
   snifBegin();
   Serial.printf("[snif] escuchando el bus  SL=GPIO%d  DA=GPIO%d\n",
                 SNIF_PIN_SL, SNIF_PIN_DA);
-#endif
-
-#if ENABLE_OCR
-  ocrLoadParams();
-  if (ocrBegin()) {
-    Serial.println("[ocr] camara lista");
-    ocrStartTask();                    // el bucle de lectura corre en su tarea (core 0)
-  } else {
-    Serial.println("[ocr] ERROR iniciando la camara (revisa PSRAM y CAM_PIN_*)");
-  }
+  // mismo nucleo que este setup() (ver comentario junto a weighTaskFn mas arriba)
+  xTaskCreatePinnedToCore(weighTaskFn, "weigh", 4096, nullptr, 1, nullptr, xPortGetCoreID());
 #endif
 
   wifiConnect();
@@ -354,38 +379,15 @@ void loop() {
 #if DIAG_LOG
   const uint32_t webT0 = micros();
 #endif
-  server.handleClient();      // el OCR ya NO se hace aqui: va en su propia tarea
+  server.handleClient();      // el sniffer+pesaje ya NO se hacen aqui: van en su propia tarea
 #if DIAG_LOG
   const uint32_t webUs = micros() - webT0;
-#endif
-
-#if ENABLE_SNIFFER
-  snifLoop();
-  // alimenta la maquina de estados del pesaje con el PESO del bus.  Cada
-  // WEIGH_FEED_MS (config.h, 20 ms ~= 50 Hz): mas muestras = pilla mejor el
-  // transitorio al retirar la gaveta rapido.
-  {
-  #ifndef WEIGH_FEED_MS
-  #define WEIGH_FEED_MS 20
-  #endif
-    static uint32_t tw = 0;
-    if (millis() - tw >= WEIGH_FEED_MS) {
-      tw = millis();
-      SnifState s; snifGet(s);
-      weighFeed(s.pesoVal, s.precioVal, s.totalVal,
-                s.stable, s.valid && !isnan(s.pesoVal));
-    }
-  }
 #endif
 
   static uint32_t hb = 0;
   if (millis() - hb > 5000) {
     hb = millis();
     Serial.print("[hb]");
-#if ENABLE_OCR
-    { OcrResult o; ocrGetLast(o);
-      Serial.printf("  OCR:%s", o.valid ? o.text : "--"); }
-#endif
 #if ENABLE_SNIFFER
     { SnifState s; snifGet(s);
       Serial.printf("  BUS valid:%d stable:%d  peso\"%s\"=%.2f  precio\"%s\"=%.2f  total\"%s\"=%.2f",
