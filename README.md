@@ -160,8 +160,19 @@ Pendiente: el envío a un servidor externo (MQTT / HTTP). Hay un gancho listo,
 ### Montaje
 
 La carcasa metálica de la balanza bloquea el WiFi: el ESP32-S3 va en una **caja de plástico
-externa**, alimentado desde la batería de la balanza con un convertidor buck-boost a 3,3 V.
-Detalles en la sección *Alimentación y montaje* de `peso_balanza_cam/README.md`.
+externa**, alimentado desde la batería de la balanza con un convertidor buck-boost (TPS63020)
+a 3,3 V. Dos ventiladores de 5 V, conmutados con un 2N2222 cada uno, ventilan la caja según la
+temperatura del chip. Esquema completo de la caja:
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/esquema-caja-oscuro.svg">
+    <img src="docs/esquema-caja-claro.svg" width="900" alt="Esquema de la caja: batería Li-ion con fusible F1 e interruptor; rama al TPS63020 que da 3,3 V al pin 3V3 de la ESP32-S3 Super Mini; rama propia con PTC F2 hacia los dos ventiladores, cada uno conmutado por un 2N2222 desde GPIO5 y GPIO6 con 470 ohm en la base y 10 kilohm a masa; y el sniffer del display en GPIO1 y GPIO4.">
+  </picture>
+</p>
+
+Detalles (materiales, polaridades, cálculo del transistor) en las secciones *Alimentación y
+montaje* y *Ventilación de la caja* de `peso_balanza_cam/README.md`.
 
 ## Si el sniffer por interrupción pierde bits
 
