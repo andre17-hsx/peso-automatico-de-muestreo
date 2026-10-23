@@ -20,8 +20,15 @@
 #define WIFI_AP_SSID     "balanza-aut"        // nombre de la red WiFi que crea el ESP
 #define WIFI_AP_PASS     "cambia-esta-clave"        // clave (MINIMO 8 caracteres)
 #define WIFI_AP_CHANNEL  6                    // canal: 1, 6 u 11 (los que no se pisan)
+//  Potencia de transmision del WiFi.  Menos potencia = menos corriente y menos calor en
+//  el regulador de la placa, pero menos alcance.  En campo hubo celulares a -80/-90 dBm:
+//  si con esto se desconectan mas, sube a WIFI_POWER_17dBm o WIFI_POWER_19_5dBm.
+#define WIFI_TX_POWER    WIFI_POWER_15dBm
 //  Portal cautivo: al conectarte a la red del ESP, el movil abre solo el panel
-//  (como el login de un aeropuerto).  Necesita un DNS "atrapatodo" en el ESP.
+//  (como el login de un aeropuerto).  Necesita un DNS "atrapatodo" en el ESP, que
+//  tambien atrae el trafico de fondo de las apps de los celulares hacia el ESP.
+//  Con 0 la red NO anuncia servidor DNS a los celulares y Android la trata como rota:
+//  probado el 2026-10-08, la pagina no cargaba (ni con los datos moviles apagados).
 #define WIFI_CAPTIVE     1
 
 //  --- Router externo (solo modo 1 y 2) ---
@@ -105,32 +112,23 @@
 // ===========================================================================
 //  CAPTURA DE PESAJES  (maquina de estados del pesaje)
 // ===========================================================================
-//  Escenario: el operario sube la gaveta -> el peso se estabiliza -> quita la
-//  gaveta -> vuelve a ~0  =>  se guarda.  UNA entrada por gaveta.
-//  Un pesaje solo se guarda si el peso BAJO de verdad (paso por valores
-//  intermedios) antes de llegar a 0.  Un salto LIMPIO a 0 (= TARA) no se guarda.
+//  Regla: el operario sube la gaveta -> el peso pasa de WEIGH_MIN_LOAD -> se busca
+//  el valor ESTABLE -> quita la gaveta -> el peso pasa por CERO (o queda negativo)
+//  => se guarda el valor estable o, si no lo hubo, el valor donde la lectura mas tiempo
+//  estuvo quieta.
+//  UNA entrada por gaveta.  Menos de WEIGH_MIN_LOAD = tara / nada (una gaveta pesa
+//  siempre mas).  En campo nunca se presiona TARA con una gaveta llena.
 //
 //  UNIDAD: el panel muestra "lb".  El firmware NO convierte nada -> el numero es
 //  el que muestra la balanza tal cual.  La balanza debe estar puesta en LIBRAS.
 //  (Para volver a "kg" busca "lb" en web_ui.cpp -> hay 6 sitios en el panel.)
-//  OJO: estos umbrales son ABSOLUTOS, en la unidad de la balanza.  Estaban
-//  puestos para kg; al pasar a LIBRAS (numeros ~2.2x mas chicos) hay que
-//  bajarlos, si no los pesos livianos no se detectan bien.
-#define WEIGH_ZERO_THRESH   0.06f   // por debajo de esto = plataforma vacia (en lb)
-#define WEIGH_STABLE_MS     700     // (solo con WEIGH_PLATEAU 0) numero quieto este tiempo -> estable
-#define WEIGH_CONFIRM_MS    1000    // tras vaciarse la plataforma, se comprueba
-                                    //   este tiempo si fue retiro real antes de guardar
-#define WEIGH_PARTIAL       0.085f  // el peso tiene que haber bajado AL MENOS esto (lb)
-                                    //   (con carga aun presente) para contar como
-                                    //   retiro real; si no -> se toma como TARA.
-                                    //   Subir = menos "filas de mas" por menear el peso,
-                                    //   pero mas riesgo de perder retiros livianos.
-#define WEIGH_PARTIAL_FRAC  0.55f   // ...o haber bajado por debajo de esta FRACCION
-                                    //   del valor estable (fraccion -> no depende de
-                                    //   la unidad).  Vale el criterio mas laxo.
-#define WEIGH_ZERO_MS       400     // cuanto tiene que durar el NEGATIVO para
-                                    //   confirmar que hubo una tara
-#define WEIGH_INVALID_MS    2500    // display apagado este tiempo -> pesaje cerrado
+//  OJO: estos umbrales son ABSOLUTOS, en la unidad de la balanza.
+#define WEIGH_ZERO_THRESH   0.06f   // <= esto: la gaveta paso por cero (o quedo negativa) -> se cierra
+#define WEIGH_MIN_LOAD      12.0f   // una gaveta empieza al llegar a este peso; menos = tara / nada
+#define WEIGH_MAX_LOAD      80.0f   // mas que esto = fuera de rango, se ignora (prueba de display
+                                    //   "888.8" al encender, presion fuerte de la mano)
+#define WEIGH_MIN_MS        600     // ms minimos puesta para guardarse (un golpe de la mano no es gaveta)
+#define WEIGH_INVALID_MS    2500    // display apagado este tiempo con gaveta puesta -> se cierra SIN guardar
 #define WEIGH_LOG_SIZE      120     // ultimos N pesajes (en RAM y en flash/NVS)
 #define WEIGH_EPS           0.005f  // diferencia de peso considerada "el mismo valor"
 #define WEIGH_PERSIST       1       // 1 = guarda el historial en NVS (sobrevive apagon)
@@ -138,57 +136,64 @@
                                     //   en un archivo en flash (LittleFS, particion "spiffs") hasta que
                                     //   se pulse "Borrar todo".  Si la particion no existe o se llena, el
                                     //   programa sigue con el buffer.  0 = comportamiento anterior.
+#define WEIGH_FEED_MS      20       // cada cuanto se alimenta la maquina de estados (ms)
 
-// --- ronda ag: retiro rapido mas fiable + menos latencia -------------------
-//  Si algo va mal y hay que volver al comportamiento anterior:
-//    - rapido:  WEIGH_V2 = 0  y  WEIGH_FEED_MS = 40   (deja el codigo nuevo pero inerte)
-//    - total:   copia los 4 ficheros de  ../_backup_pre_rebote/  al sketch y reflashea
-#define WEIGH_V2           1        // 0 = comportamiento de antes de la ronda ag
-#define WEIGH_DIP          0.05f    // el neto rebota a MENOS de -esto al retirar de
-                                    //   verdad (la celda rebota); una TARA nunca baja
-                                    //   de 0.  (en lb).  Subir si alguna tara se cuela;
-                                    //   bajar si algun retiro rapido se sigue perdiendo.
-#define WEIGH_SETTLE_MS    350      // con señal de retiro (intermedios O rebote) se
-                                    //   guarda a los ~350 ms en vez de WEIGH_CONFIRM_MS.
-                                    //   Ponlo = WEIGH_CONFIRM_MS para desactivar.
-#define WEIGH_FEED_MS      20       // cada cuanto se alimenta la maquina de estados
-                                    //   (era 40).  Mas muestras = pilla mejor el
-                                    //   transitorio.  Vuelve a 40 para revertir.
-
-// --- captura por VENTANA TOLERANTE (gavetas con agua que escurre, <= ~2 s puestas) ---
-//  Antes el valor solo se daba por "estable" si NO cambiaba nada durante ~0,25 s
-//  (y 4 refrescos iguales); con un escurrido de 0,1 lb/s eso casi nunca ocurria.
-//  Ahora se da por ASENTADO si las lecturas de los ultimos WEIGH_WIN_MS varian menos
-//  de WEIGH_BAND.  Garantia de "nada de la bajada": la referencia es el primer valor
-//  asentado de ESA gaveta (se reinicia con cada gaveta) y despues solo se aceptan
-//  valores asentados a menos de max(WEIGH_TOL_ABS, WEIGH_TOL_PCT %) de ella; la
-//  caida al retirar la gaveta baja decenas de lb en fracciones de segundo, asi que
-//  ni forma un tramo asentado ni entra en ese margen.
-//  Durante los primeros WEIGH_PLACE_MS con carga la referencia si puede subir
+// --- valor ESTABLE: captura por VENTANA TOLERANTE (gavetas con agua que escurre) ---
+//  Se da por ASENTADO un valor si las lecturas de los ultimos WEIGH_WIN_MS varian
+//  menos de WEIGH_BAND.  La referencia es el primer valor asentado de ESA gaveta y
+//  despues solo se aceptan valores a menos de max(WEIGH_TOL_ABS, WEIGH_TOL_PCT %) de
+//  ella: la caida al retirar la gaveta ni forma un tramo asentado ni entra en ese
+//  margen.  Durante los primeros WEIGH_PLACE_MS la referencia si puede subir
 //  (gaveta posada despacio, sostenida por la mano).
-//  Pon WEIGH_PLATEAU 0 para volver EXACTAMENTE al criterio anterior.
-#define WEIGH_PLATEAU      1
 #define WEIGH_WIN_MS       250      // ventana de lecturas (ms)
 #define WEIGH_BAND         0.15f    // max-min dentro de la ventana (lb; la balanza va de 0,1 en 0,1)
 #define WEIGH_TOL_ABS      1.0f     // margen respecto a la referencia (lb) ...
 #define WEIGH_TOL_PCT      3.0f     // ... o este % de ella, lo que sea MAYOR
 #define WEIGH_PLACE_MS     1000     // fase de colocacion: la referencia puede subir
 
-//  El valor asentado manda siempre, salvo que DESPUES de la ultima vez que se dio por
-//  asentado el peso suba por encima de valor / WEIGH_PLAUS_FRAC: entonces era una pausa
-//  en mitad de la colocacion (caso real: 5.3 lb) y se descarta (PERDIDO, cap>0 en /log).
-//  Un golpe al poner no lo activa (su pico es anterior al valor asentado).  0 = desactivado.
-#define WEIGH_PLAUS_FRAC   0.7f
-
-//  RESCATE: una gaveta que se RETIRO de verdad pero no dejo ningun valor asentado valido
-//  (nunca asento, o se descarto por el chequeo de arriba) no se pierde: se guarda
-//  WEIGH_RESCUE_FRAC x el maximo visto, marcada "e" (ESTIMADO) en /log.  Solo si estuvo
-//  puesta >= WEIGH_RESCUE_MIN_MS, su maximo es >= WEIGH_RESCUE_MIN_LB (descarta roces de
-//  la mano) y el peso bajo por intermedios tras el maximo (una tara no cuenta).
-//  WEIGH_RESCUE_FRAC 0 = desactivado.
+//  El valor ESTABLE manda siempre.  Excepcion "pausa a mitad de colocacion" (visto en
+//  campo; hoy solo cuenta si la pausa es de 12 lb o mas): si el estable estuvo quieto en
+//  total menos de WEIGH_PLAUS_HOLD_MS y despues el peso subio por
+//  encima de valor / WEIGH_PLAUS_FRAC, ese estable no era el peso real y se guarda
+//  WEIGH_RESCUE_FRAC x el maximo.  Si el estable duro mas, una subida posterior es una
+//  PRESION de la mano y no lo anula.  WEIGH_PLAUS_FRAC 0 = desactivado.
+#define WEIGH_PLAUS_FRAC     0.7f
+#define WEIGH_PLAUS_HOLD_MS  400
 #define WEIGH_RESCUE_FRAC    0.92f
-#define WEIGH_RESCUE_MIN_LB  15.0f
-#define WEIGH_RESCUE_MIN_MS  600
+
+//  Valor ESTIMADO (sin valor estable, la gaveta se quito muy rapido): se guarda el valor
+//  donde la lectura estuvo QUIETA mas tiempo (la subida, la bajada y una presion de la mano
+//  cambian rapido y no cuentan), marcado "e ... sost" en /log.  Si nunca estuvo quieta:
+//  WEIGH_RESCUE_FRAC x el maximo ("e ... x0.92").
+
+//  SIMULADOR DE PESAJES (solo para pruebas en oficina).  1 = NO lee la balanza:
+//  genera gavetas falsas cada pocos segundos (normales, retiros rapidos, golpes,
+//  pausas a mitad de colocacion, livianas) y las pasa por el pesaje REAL.  Cada
+//  una queda en /log como "SIM #n W=<peso real> <tipo>" para comparar con lo guardado.
+//  OJO: los pesajes simulados SE GUARDAN en el historial: exporta antes los reales y
+//  usa "Borrar todo" al terminar.  El panel muestra "MODO SIMULADOR".  NUNCA a campo con 1.
+#define WEIGH_SIM            0
+#define WEIGH_SIM_GAP_MS     2000   // pausa media entre gavetas simuladas (ms)
+#define WEIGH_SIM_TARE       9      // plataforma vacia: 9 = tara activa como en campo (marca -9),
+                                    //   0 = sin tara (marca ~0, con ruido)
+
+// --- VENTILACION de la caja del ESP (dos ventiladores que trabajan JUNTOS) ---
+//  Uno mete aire y el otro lo saca: se encienden y apagan a la vez segun la
+//  temperatura interna del chip (media de ~30 s), con histeresis: ON al llegar a
+//  FAN_ON_C, OFF al bajar a FAN_OFF_C (y al menos FAN_MIN_ON_MS encendidos).
+//  Si el sensor no da dato, se encienden (a prueba de fallos).
+//  HARDWARE: cada ventilador con su MOSFET de nivel logico (p. ej. AO3400) en el lado
+//  de tierra, 100 ohm a la puerta, 100 k de puerta a GND, diodo (1N5819) en paralelo
+//  con el ventilador, y los ventiladores alimentados desde la BATERIA (no del pin 3V3:
+//  el arranque del motor podria reiniciar el ESP).  NUNCA el ventilador directo al GPIO.
+#define FAN_ENABLE         1
+#define FAN1_PIN           5        // MOSFET del ventilador que mete aire
+#define FAN2_PIN           6        // MOSFET del que lo saca (-1 si los dos van al mismo pin)
+#define FAN_ACTIVE_HIGH    1        // 1 = pin en ALTO enciende (MOSFET canal N)
+#define FAN_ON_C           68.0f    // enciende con la media >= esto (temperatura del CHIP, no del aire)
+#define FAN_OFF_C          60.0f    // apaga con la media <= esto
+#define FAN_CHECK_MS       5000     // cada cuanto se mide
+#define FAN_MIN_ON_MS      60000    // una vez encendidos, al menos esto
 
 // --- registro de diagnostico (/log) ---
 //  Guarda en RAM (no en flash) los ultimos eventos: pesajes guardados/descartados y
@@ -200,8 +205,9 @@
 //  Cuantas lineas (eventos) conserva el registro en RAM; al llenarse, se va
 //  borrando la mas vieja.  Cada linea pesa 64 bytes fijos (ver diaglog.cpp),
 //  asi que el costo en RAM es DIAG_LOG_LINES*64.  De una jornada real (pesca
-//  2026-09-30, ~75 min) salieron ~4 lineas/min -> con 1024 alcanza para unas
-//  4 horas seguidas antes de empezar a perder las mas antiguas; si una
-//  jornada dura mas, descarga /log a mitad de camino.
-#define DIAG_LOG_LINES     1024
+//  2026-09-30, ~75 min) salieron ~4 lineas/min -> con 256 alcanza para ~1 hora
+//  antes de empezar a perder las mas antiguas (con 1024, ~4 h, pero cuesta 48 KB
+//  mas de RAM, y la prueba del 2026-10-05 mostro el margen de memoria demasiado
+//  justo al conectarse varios celulares); descarga /log a mitad de camino.
+#define DIAG_LOG_LINES     256
 

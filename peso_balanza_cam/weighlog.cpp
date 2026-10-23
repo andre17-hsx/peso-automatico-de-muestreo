@@ -14,23 +14,20 @@
 
 // -------- parametros por defecto (ajustables en config.h) ------------------
 #ifndef WEIGH_ZERO_THRESH
-#define WEIGH_ZERO_THRESH   0.10f
+#define WEIGH_ZERO_THRESH   0.06f   // <= esto: la gaveta paso por cero (o quedo negativa) -> se cierra
 #endif
-#ifndef WEIGH_STABLE_MS
-#define WEIGH_STABLE_MS     700
+#ifndef WEIGH_MIN_LOAD
+#define WEIGH_MIN_LOAD      12.0f   // una gaveta empieza al llegar a este peso; menos = tara / nada
 #endif
-#ifndef WEIGH_ZERO_MS
-#define WEIGH_ZERO_MS       400
+#ifndef WEIGH_MAX_LOAD
+#define WEIGH_MAX_LOAD      80.0f   // lecturas por encima = fuera de rango (prueba de display 888.8, presion fuerte)
 #endif
-#ifndef WEIGH_CONFIRM_MS
-#define WEIGH_CONFIRM_MS    1000
+#ifndef WEIGH_MIN_MS
+#define WEIGH_MIN_MS        600     // una gaveta tiene que estar puesta al menos esto para guardarse
 #endif
-#ifndef WEIGH_PARTIAL
-#define WEIGH_PARTIAL       0.15f
+#ifndef WEIGH_ZERO_N
+#define WEIGH_ZERO_N        3       // lecturas seguidas en cero para cerrar (3 x 20 ms): un glitch suelto no cierra
 #endif
-#ifndef WEIGH_PARTIAL_FRAC
-#define WEIGH_PARTIAL_FRAC  0.55f   // ...o que baje a menos de esta fraccion del
-#endif                              //    valor estable (para pesos netos pequeños)
 #ifndef WEIGH_INVALID_MS
 #define WEIGH_INVALID_MS    2500
 #endif
@@ -43,15 +40,6 @@
 #ifndef WEIGH_PERSIST
 #define WEIGH_PERSIST       1
 #endif
-#ifndef WEIGH_V2
-#define WEIGH_V2            1
-#endif
-#ifndef WEIGH_DIP
-#define WEIGH_DIP           0.12f
-#endif
-#ifndef WEIGH_SETTLE_MS
-#define WEIGH_SETTLE_MS     350
-#endif
 #ifndef HIST_BATCH
 #define HIST_BATCH          8      // cada cuantos pesajes se pasan al archivo permanente (en lote)
 #endif
@@ -59,9 +47,6 @@
 #define WEIGH_FEED_MS       20
 #endif
 // captura por ventana tolerante (ver config.h)
-#ifndef WEIGH_PLATEAU
-#define WEIGH_PLATEAU       1
-#endif
 #ifndef WEIGH_WIN_MS
 #define WEIGH_WIN_MS        250
 #endif
@@ -80,14 +65,11 @@
 #ifndef WEIGH_PLAUS_FRAC
 #define WEIGH_PLAUS_FRAC    0.7f
 #endif
+#ifndef WEIGH_PLAUS_HOLD_MS
+#define WEIGH_PLAUS_HOLD_MS 400     // un estable quieto esto o mas en total NO se descarta (presion != pausa)
+#endif
 #ifndef WEIGH_RESCUE_FRAC
 #define WEIGH_RESCUE_FRAC   0.92f
-#endif
-#ifndef WEIGH_RESCUE_MIN_LB
-#define WEIGH_RESCUE_MIN_LB 15.0f
-#endif
-#ifndef WEIGH_RESCUE_MIN_MS
-#define WEIGH_RESCUE_MIN_MS 600
 #endif
 
 // -------------------------- historial (ring buffer) -----------------------
@@ -148,16 +130,11 @@ enum WState { WS_EMPTY, WS_RISING, WS_STABLE };
 static volatile int  g_state = WS_EMPTY;
 
 // --- estado de la maquina de estados del pesaje (ver mas abajo) ---
-enum { PH_EMPTY, PH_LOAD, PH_CONFIRM };
+enum { PH_EMPTY, PH_LOAD };
 static int      g_phase    = PH_EMPTY;
-static float    g_sP  = NAN, g_sPr = NAN, g_sT = NAN;   // ultimo valor ESTABLE
-static float    g_lastP    = 0;       // ultimo peso (para el "quieto" interno)
-static uint32_t g_pMoveMs  = 0;       // millis del ultimo cambio de g_lastP
+static float    g_sP  = NAN, g_sPr = NAN, g_sT = NAN;   // ultimo valor ESTABLE de la gaveta en curso
 static uint32_t g_badMs    = 0;       // inicio de la racha ilegible
-static float    g_minLoad  = NAN;     // peso MINIMO con carga desde la ultima lectura estable
-static uint32_t g_confirmMs = 0;      // millis al entrar en CONFIRMANDO
-static uint32_t g_negMs    = 0;       // millis desde que la plataforma esta negativa
-static float    g_dip      = 0;       // peso MAS NEGATIVO visto en CONFIRMANDO (rebote de la celda)
+static uint8_t  g_zeroN    = 0;       // lecturas seguidas en cero con una gaveta puesta
 
 // --- datos de la gaveta en curso, para el registro de diagnostico (/log) ---
 // weighClear() corre en la tarea del SERVIDOR WEB; la maquina de estados de
@@ -173,11 +150,23 @@ static int      g_ldN    = 0;         // lecturas con carga
 static int      g_rejN   = 0;         // tramos asentados RECHAZADOS por salirse de la banda
 static float    g_ldMax  = NAN, g_ldMin = NAN;
 static float    g_maxPost = NAN;      // maximo visto DESPUES de la ultima lectura asentada
-static float    g_minAM   = NAN;      // minimo visto despues de alcanzar g_ldMax (evidencia de retiro)
-static float    g_ldPr    = NAN;      // ultimo precio visto con carga (para el rescate)
-static bool     g_rescued = false;    // la gaveta que se esta guardando es una ESTIMACION (rescate)
+static float    g_ldPr    = NAN;      // ultimo precio visto con carga (para el valor estimado)
+static uint32_t g_lastAccMs = 0;      // millis de la ULTIMA lectura asentada (con g_capMs: cuanto duro el estable)
 
-#if WEIGH_PLATEAU
+// Cuanto tiempo paso la lectura en cada valor (casillas de 0,5 lb entre WEIGH_MIN_LOAD y
+// WEIGH_MAX_LOAD): sin valor estable, se guarda el valor donde mas tiempo estuvo.  Una
+// presion de la mano es un pico corto y no gana.
+#define SUS_STEP 0.5f
+#define SUS_BINS ((int)((WEIGH_MAX_LOAD - WEIGH_MIN_LOAD) / SUS_STEP) + 1)
+static uint32_t g_susN[SUS_BINS];      // laxo: cada 20 ms (cuenta tambien la subida y la bajada)
+static float    g_susSum[SUS_BINS];
+static float    g_prevP = NAN;        // lectura anterior con carga (para saber si estaba quieta)
+// Estricto: solo refrescos NUEVOS del display (~55 ms) iguales al refresco anterior, o sea
+// el peso se mantuvo al menos 2 refrescos.  Si no hay ninguno se usa el laxo (como antes).
+static uint32_t g_qN[SUS_BINS];
+static float    g_qSum[SUS_BINS];
+static float    g_prevF = NAN;        // refresco anterior con carga
+
 // Ventana de las ultimas lecturas con carga: se da por ASENTADO un valor si las
 // lecturas de los ultimos WEIGH_WIN_MS varian menos de WEIGH_BAND (ver config.h).
 #define WIN_MAX 64
@@ -213,24 +202,25 @@ static bool winFlat(uint32_t now) {
   if (oldest - cutoff > 3 * WEIGH_FEED_MS) return false;     // la ventana no esta completa
   return (mx - mn) <= WEIGH_BAND;
 }
-#endif
 
 static void loadDiagReset() {
-  g_capMs = 0; g_capN = 0; g_ldN = 0; g_rejN = 0; g_maxPost = NAN; g_minAM = NAN; g_ldPr = NAN;
+  g_capMs = 0; g_lastAccMs = 0; g_capN = 0; g_ldN = 0; g_rejN = 0; g_maxPost = NAN; g_ldPr = NAN;
   g_ldMax = g_ldMin = NAN;
-#if WEIGH_PLATEAU
   g_winN = 0; g_winHead = 0;
   g_refP = NAN;
-#endif
+  memset(g_susN, 0, sizeof(g_susN));
+  memset(g_susSum, 0, sizeof(g_susSum));
+  g_prevP = NAN;
+  memset(g_qN, 0, sizeof(g_qN));
+  memset(g_qSum, 0, sizeof(g_qSum));
+  g_prevF = NAN;
 }
 
 static void smReset() {
   g_phase = PH_EMPTY;
   g_sP = g_sPr = g_sT = NAN;
-  g_minLoad = NAN;
-  g_lastP = 0;
-  g_pMoveMs = g_badMs = g_confirmMs = g_negMs = 0;
-  g_dip = 0;
+  g_badMs = 0;
+  g_zeroN = 0;
   g_state = WS_EMPTY;
   loadDiagReset();
 }
@@ -701,303 +691,203 @@ void weighArchiveInfo(WeighArchiveInfo* out) {
 }
 
 // ===========================================================================
-//  MAQUINA DE ESTADOS DEL PESAJE
+//  MAQUINA DE ESTADOS DEL PESAJE  (regla simple)
 // ---------------------------------------------------------------------------
-//   VACIA      : plataforma ~0 (o dormida).
-//   CON CARGA  : hay peso; mientras este ESTABLE se recuerda su valor.
-//   CONFIRMAND.: la plataforma volvio a ~0.  Se comprueba si fue RETIRO o TARA:
-//                  · RETIRO real -> el peso BAJO de verdad (paso por valores
-//                    intermedios: WEIGH_PARTIAL kg menos que el estable, O por
-//                    debajo de WEIGH_PARTIAL_FRAC del estable si el neto es
-//                    pequeño)  O  la celda REBOTO a negativo (< -WEIGH_DIP) al
-//                    quitar el peso -> SE GUARDA (a los WEIGH_SETTLE_MS).
-//                  · TARA / re-cero -> salto LIMPIO de un peso estable a 0 sin
-//                    pasar por valores menores y SIN rebote  Y/O  la plataforma
-//                    queda en NEGATIVO sostenido -> NO se guarda (a WEIGH_CONFIRM_MS).
-//                Si vuelve a haber carga (cambio de gaveta) se cierra el
-//                pendiente y empieza otro pesaje.
-//                (Menear la gaveta sin quitarla NO cuenta: al volver el peso
-//                 cerca del estable se olvida el bache -> ver PH_LOAD.)
-//
-//   "Estable" = el bit ESTABLE del bus (stableHint) O, si no lo hay (OCR),
-//   el numero quieto durante WEIGH_STABLE_MS.
+//   VACIA     : nada en la plataforma, o menos de WEIGH_MIN_LOAD (una gaveta pesa
+//               siempre mas: por debajo es tara, ruido o mover la balanza).
+//   CON CARGA : empieza al llegar a WEIGH_MIN_LOAD.  Se busca el valor ESTABLE
+//               (ventana tolerante) y se recuerda el maximo.
+//   Al pasar por CERO o quedar NEGATIVA (<= WEIGH_ZERO_THRESH durante WEIGH_ZERO_N
+//   lecturas seguidas) se cierra la gaveta:
+//     1) si hubo valor estable >= WEIGH_MIN_LOAD -> se guarda ese ('r' en /log);
+//     2) si no lo hubo -> el valor donde la lectura MAS TIEMPO estuvo ('e ... sost'):
+//        una presion de la mano antes de quitar la gaveta es un pico corto y no gana;
+//     3) caso especial "pausa a mitad de colocacion": un estable que estuvo quieto muy
+//        poco (< WEIGH_PLAUS_HOLD_MS) y despues el peso subio mucho (> 1/WEIGH_PLAUS_FRAC)
+//        -> el real llego despues sin asentarse: WEIGH_RESCUE_FRAC x maximo ('e ... x0.92').
+//   Todo solo si la gaveta estuvo puesta >= WEIGH_MIN_MS (un golpe de la mano no es
+//   una gaveta).  Si no, queda como PERDIDO en /log.  Lecturas > WEIGH_MAX_LOAD se
+//   tratan como display ilegible (prueba de display "888.8", presion muy fuerte).
+//   En campo nunca se presiona TARA con una gaveta llena: no hace falta distinguir
+//   "retiro" de "tara".
 // ===========================================================================
-// cuanto estuvo la gaveta puesta (ms): hasta que la lectura bajo del umbral, o hasta ahora
-static uint32_t loadDur() {
-  uint32_t end = (g_phase == PH_CONFIRM && g_confirmMs) ? g_confirmMs : millis();
-  return end - g_loadMs;
-}
-
-static void commitPending(const char* why) {
-  Weighing w = logAppend(g_sP, g_sPr, g_sT, millis());
-  Serial.printf("[pesaje] %s -> GUARDADO  PESO %.2f  PRECIO %.2f  TOTAL %.2f\n",
-                why, w.peso, (double)w.precio, (double)w.total);
-  // registro de diagnostico: c=cambio de gaveta, d=display cerrado, r=retiro normal,
-  // e=ESTIMADO (rescate: no hubo valor asentado, ver tryRescue)
-  g_diagCnt.traysOk++;
-  if (g_rescued) {
-    diagLog("OK %.1f e carga=%lu max=%.1f x%.2f", (double)w.peso, (unsigned long)loadDur(),
-            (double)g_ldMax, (double)WEIGH_RESCUE_FRAC);
-    g_rescued = false;
-  } else {
-    char tag = strstr(why, "cambio") ? 'c' : (why[0] == 'd' ? 'd' : 'r');
-    diagLog("OK %.1f %c carga=%lu 1a=%lu n=%d rech=%d", (double)w.peso, tag,
-            (unsigned long)loadDur(), (unsigned long)(g_capMs ? g_capMs - g_loadMs : 0),
-            g_capN, g_rejN);
+// how: 0 = valor estable; 'q' = sostenido quieto (>= 2 refrescos); 's' = sostenido laxo; 'x' = estimado WEIGH_RESCUE_FRAC x maximo
+static void commitWeighing(float peso, float precio, float total, char how, uint32_t dur) {
+  if (isnan(peso) || peso <= 0) {                        // guarda defensiva: nunca un pesaje sin valor
+    diagLog("DESCARTE sin valor carga=%lu", (unsigned long)dur);
+    return;
   }
+  Weighing w = logAppend(peso, precio, total, millis());
+  Serial.printf("[pesaje] %s -> GUARDADO  PESO %.2f  PRECIO %.2f  TOTAL %.2f\n",
+                how ? "ESTIMADO" : "estable", (double)w.peso, (double)w.precio, (double)w.total);
+  g_diagCnt.traysOk++;
+  if (how == 'q')
+    diagLog("OK %.1f e carga=%lu max=%.1f quieto", (double)w.peso, (unsigned long)dur, (double)g_ldMax);
+  else if (how == 's')
+    diagLog("OK %.1f e carga=%lu max=%.1f sost", (double)w.peso, (unsigned long)dur, (double)g_ldMax);
+  else if (how == 'x')
+    diagLog("OK %.1f e carga=%lu max=%.1f x%.2f", (double)w.peso, (unsigned long)dur,
+            (double)g_ldMax, (double)WEIGH_RESCUE_FRAC);
+  else
+    diagLog("OK %.1f r carga=%lu 1a=%lu n=%d rech=%d", (double)w.peso, (unsigned long)dur,
+            (unsigned long)(g_capMs ? g_capMs - g_loadMs : 0), g_capN, g_rejN);
   if (g_commitCb) g_commitCb(w);
 }
 
-// La gaveta estuvo puesta pero se retiro sin llegar a dar un valor asentado: es un
-// pesaje PERDIDO.  Se deja constancia con lo que se vio, para poder afinar.
-// cap=N : cuantas veces SI llego a asentar antes de esto (0 = nunca; >0 = asento,
-//         pero el valor se descarto por inverosimil, ver dropIfImplausible).
-static void logLost(const char* where) {
-  uint32_t dur = loadDur();
-  if (g_ldN < 3 || dur < 200) return;             // un roce de milisegundos, no una gaveta
+// La gaveta estuvo puesta pero no se pudo guardar: se deja constancia para afinar.
+// where: corta (< WEIGH_MIN_MS) | liviano (estimado < WEIGH_MIN_LOAD) | display (se apago).
+// cap=N : cuantas veces llego a asentar (0 = nunca).
+static void logLost(const char* where, uint32_t dur) {
+  if (g_ldN < 3) return;                                 // un roce de milisegundos, no una gaveta
   g_diagCnt.traysLost++;
-  diagLog("PERDIDO(%s) carga=%lu max=%.1f min=%.1f n=%d r=%d cap=%d", where, (unsigned long)dur,
-          (double)g_ldMax, (double)g_ldMin, g_ldN, g_rejN, g_capN);
+  diagLog("PERDIDO(%s) carga=%lu max=%.1f n=%d r=%d cap=%d", where, (unsigned long)dur,
+          (double)g_ldMax, g_ldN, g_rejN, g_capN);
 }
 
-// El valor asentado manda siempre, SALVO que despues de la ultima vez que se dio por
-// asentado el peso haya subido mucho por encima de el (a mas de 1/WEIGH_PLAUS_FRAC):
-// entonces lo asentado era una pausa en mitad de la colocacion (caso real: 5.3 lb) y
-// el peso verdadero llego despues sin asentarse.  Se trata como si nunca hubiera
-// asentado.  Un golpe al poner NO activa esto: su pico es ANTERIOR al valor asentado.
-// Se llama una sola vez por gaveta, al dejar de considerarla "cargada".
-static void dropIfImplausible() {
-  if (!isnan(g_sP) && !isnan(g_maxPost) && g_sP < WEIGH_PLAUS_FRAC * g_maxPost) {
-    g_sP = g_sPr = g_sT = NAN;
+// Caso "pausa a mitad de colocacion" (visto en campo el 2026-09-30 a 5.3 lb; hoy una pausa
+// por debajo de WEIGH_MIN_LOAD ya no cuenta, esto cubre las de 12 lb o mas): el estable duro
+// muy poco y despues el peso subio mucho por encima -> ese estable no era el peso real.
+// Duracion del estable = tramo aceptado + la ventana que hizo falta para el 1er acepto.
+// Si estuvo quieto WEIGH_PLAUS_HOLD_MS o mas, una subida posterior es una PRESION de la mano
+// y no lo anula.
+static bool isPauseValue() {
+  return !isnan(g_sP) && !isnan(g_maxPost) && g_sP < WEIGH_PLAUS_FRAC * g_maxPost &&
+         (g_lastAccMs - g_capMs) + WEIGH_WIN_MS < (uint32_t)WEIGH_PLAUS_HOLD_MS;
+}
+
+// Valor donde la lectura mas tiempo estuvo QUIETA (ventana de +-1 casilla = ~+-0,75 lb);
+// NAN si nunca estuvo quieta.
+static float sustainedValue(const uint32_t* cnt, const float* acc) {
+  int best = -1; uint32_t bestN = 0;
+  for (int i = 0; i < SUS_BINS; i++) {
+    uint32_t n = cnt[i] + (i > 0 ? cnt[i - 1] : 0) + (i + 1 < SUS_BINS ? cnt[i + 1] : 0);
+    if (n > bestN) { bestN = n; best = i; }
   }
+  if (best < 0) return NAN;
+  float sum = 0; uint32_t n = 0;
+  for (int i = best - 1; i <= best + 1; i++)
+    if (i >= 0 && i < SUS_BINS) { sum += acc[i]; n += cnt[i]; }
+  return n ? roundf(sum / n * 10.0f) / 10.0f : NAN;
 }
 
-// RESCATE: gaveta que estuvo puesta y se RETIRO de verdad pero no dejo ningun valor
-// asentado valido (nunca asento, o se descarto por inverosimil): en vez de perderla se
-// guarda WEIGH_RESCUE_FRAC x el maximo visto, marcada 'e' (estimado) en /log.  Solo si
-// estuvo puesta >= WEIGH_RESCUE_MIN_MS, el maximo es >= WEIGH_RESCUE_MIN_LB (descarta
-// roces) y el peso BAJO por intermedios despues del maximo (retiro real: una tara es un
-// escalon limpio y el ultimo valor cargado sigue siendo ~ el maximo).
-static bool tryRescue(const char* why) {
-  if (WEIGH_RESCUE_FRAC <= 0) return false;
-  if (!isnan(g_sP) || isnan(g_ldMax) || isnan(g_minAM)) return false;
-  if (g_ldMax < WEIGH_RESCUE_MIN_LB || loadDur() < (uint32_t)WEIGH_RESCUE_MIN_MS) return false;
-  float need = fmaxf(g_ldMax - WEIGH_PARTIAL, g_ldMax * WEIGH_PARTIAL_FRAC);
-  if (g_minAM > need) return false;
-  float est = roundf(g_ldMax * WEIGH_RESCUE_FRAC * 10.0f) / 10.0f;
-  g_sP  = est;
-  g_sPr = g_ldPr;
-  g_sT  = isnan(g_ldPr) ? NAN : roundf(est * g_ldPr * 100.0f) / 100.0f;
-  g_rescued = true;
-  commitPending(why);
-  return true;
+// Cierra la gaveta en curso y decide que se guarda (ver la regla arriba).
+// passedZero = false cuando se cierra porque el display quedo ilegible: no paso por cero.
+static void closeLoad(uint32_t now, bool passedZero) {
+  uint32_t dur = now - g_loadMs;
+  bool pause = isPauseValue();
+  if (pause) g_sP = g_sPr = g_sT = NAN;
+  float est = pause ? NAN : sustainedValue(g_qN, g_qSum);  // quieto >= 2 refrescos
+  char how = 'q';
+  if (!pause && isnan(est)) { est = sustainedValue(g_susN, g_susSum); how = 's'; }  // como antes
+  if (isnan(est)) {                                        // pausa, o nunca estuvo quieta: x maximo
+    if (WEIGH_RESCUE_FRAC > 0 && !isnan(g_ldMax)) est = roundf(g_ldMax * WEIGH_RESCUE_FRAC * 10.0f) / 10.0f;
+    how = 'x';
+  }
+  if (!passedZero) {
+    logLost("display", dur);
+  } else if (dur < (uint32_t)WEIGH_MIN_MS) {
+    logLost("corta", dur);                                 // un golpe de la mano, no una gaveta
+  } else if (!isnan(g_sP)) {
+    commitWeighing(g_sP, g_sPr, g_sT, 0, dur);             // valor estable (siempre >= WEIGH_MIN_LOAD)
+  } else if (!isnan(est) && est >= WEIGH_MIN_LOAD) {
+    float tot = isnan(g_ldPr) ? NAN : roundf(est * g_ldPr * 100.0f) / 100.0f;
+    commitWeighing(est, g_ldPr, tot, how, dur);            // valor estimado
+  } else {
+    logLost("liviano", dur);                               // por debajo de WEIGH_MIN_LOAD: tara / nada
+  }
+  smReset();
 }
 
-static void smStartLoad(float peso) {
+static void smStartLoad(uint32_t now) {
+  smReset();
   g_phase = PH_LOAD;
-  g_sP = g_sPr = g_sT = NAN;
-  g_minLoad = peso;
   g_state = WS_RISING;
-  loadDiagReset();
-  g_loadMs = millis();
+  g_loadMs = now;
   Serial.println("[pesaje] carga detectada, esperando a que se estabilice...");
 }
 
-// ¿el peso BAJO de verdad (con carga) antes de llegar a 0?  -> retiro real.
-// Cuanto tuvo que bajar = el MAYOR (mas facil de cumplir) de dos criterios:
-//   - una caida ABSOLUTA de WEIGH_PARTIAL, o
-//   - una caida RELATIVA (bajo por debajo de WEIGH_PARTIAL_FRAC del valor
-//     estable).  Lo segundo es lo que hace que funcione con pesos NETOS
-//     pequeños (tara activa), donde no caben 0.15 kg entre el valor estable y
-//     el umbral de vacio.  Ambos terminos son < g_sP, asi que una TARA (salto
-//     limpio: g_minLoad == g_sP) sigue sin contar como retiro.
-static bool sawRealUnload() {
-  if (isnan(g_sP) || isnan(g_minLoad)) return false;
-  float need = g_sP - WEIGH_PARTIAL;
-  float rel  = g_sP * WEIGH_PARTIAL_FRAC;
-  if (rel > need) need = rel;
-  return g_minLoad <= need;
-}
-
-void weighFeed(float peso, float precio, float total, bool stableHint, bool valid) {
+void weighFeed(float peso, float precio, float total, bool stableHint, bool valid, bool fresh) {
+  (void)stableHint;
   if (g_resetPending) { g_resetPending = false; smReset(); }   // pedido por weighClear() (otra tarea)
   uint32_t now = millis();
-  bool ok = valid && !isnan(peso);
 
   // ---- display ilegible / dormido ----
-  if (!ok) {
+  if (!valid || isnan(peso) || peso > WEIGH_MAX_LOAD) {  // ilegible, o fuera de rango (888.8)
     if (g_badMs == 0) g_badMs = now;
-    if (now - g_badMs < WEIGH_INVALID_MS) return;      // glitch breve -> ignorar
-    if (g_phase != PH_EMPTY) {
-      dropIfImplausible();
-      if    (sawRealUnload())  commitPending("display cerrado");
-      else if (!isnan(g_sP))   {
-        Serial.println("[pesaje] display cerrado sin retiro -> no se guarda");
-        g_diagCnt.tares++;
-        diagLog("DESCARTE display cerrado sin retiro v=%.1f", (double)g_sP);
-      }
-      else if (!tryRescue("display cerrado (ESTIMADO)")) logLost("display");
-      smReset();
-    }
+    if (g_phase == PH_LOAD && now - g_badMs >= WEIGH_INVALID_MS)
+      closeLoad(now, false);                             // no paso por cero: no se guarda
     return;
   }
   g_badMs = 0;
 
-  // seguimiento de "quieto" (fallback si no hay bit ESTABLE)
-  if (fabsf(peso - g_lastP) >= WEIGH_EPS) { g_lastP = peso; g_pMoveMs = now; }
-
-  bool loaded = (peso >= WEIGH_ZERO_THRESH);
-
-  switch (g_phase) {
-
   // ------------------------------------------------------------ VACIA
-  case PH_EMPTY:
-    if (loaded) smStartLoad(peso);
-    return;
-
-  // ------------------------------------------------------------ CON CARGA
-  case PH_LOAD:
-    if (loaded) {
-#if WEIGH_V2
-      // si el peso VUELVE a subir cerca del valor estable, el bache era
-      // manipulacion (menear la gaveta), no un descenso -> se olvida.  Asi una
-      // TARA posterior no se cuela por un g_minLoad artificialmente bajo.
-      if (!isnan(g_sP) && peso >= g_sP - WEIGH_PARTIAL)  g_minLoad = peso;
-      else
-#endif
-      if (isnan(g_minLoad) || peso < g_minLoad)          g_minLoad = peso;   // sigue el minimo
-      // datos de la gaveta para el registro de diagnostico
-      g_ldN++;
-      if (isnan(g_ldMax) || peso > g_ldMax) { g_ldMax = peso; g_minAM = peso; }
-      else if (peso < g_minAM) g_minAM = peso;
-      if (isnan(g_ldMin) || peso < g_ldMin) g_ldMin = peso;
-      g_ldPr = precio;
-      if (isnan(g_maxPost) || peso > g_maxPost) g_maxPost = peso;
-#if WEIGH_PLATEAU
-      // ---- captura por VENTANA TOLERANTE ----
-      // Un valor se da por ASENTADO si las lecturas de los ultimos WEIGH_WIN_MS
-      // varian menos de WEIGH_BAND (un escurrido de 0,1 lb/s cabe de sobra).
-      // La referencia es el primer valor asentado de ESTA gaveta (se borra con
-      // cada gaveta).  Despues solo se aceptan valores asentados a menos de
-      // max(WEIGH_TOL_ABS, WEIGH_TOL_PCT %) de ella: la caida al retirar la gaveta
-      // baja decenas de lb en fracciones de segundo, ni forma un tramo asentado
-      // ni entra en ese margen -> NUNCA se guarda un valor de la bajada.
-      // Solo en los primeros WEIGH_PLACE_MS la referencia puede SUBIR (gaveta
-      // posada despacio / sostenida por la mano).
-      (void)stableHint;
-      winPush(now, peso);
-      if (winFlat(now)) {
-        bool accept = false;
-        if (isnan(g_refP)) {
-          g_refP = peso;
-          accept = true;
-        } else {
-          float tol = fmaxf(WEIGH_TOL_ABS, g_refP * (WEIGH_TOL_PCT / 100.0f));
-          if (fabsf(peso - g_refP) <= tol) {
-            accept = true;
-          } else if (peso > g_refP + tol && (now - g_loadMs) <= WEIGH_PLACE_MS) {
-            g_refP = peso;
-            accept = true;
-          } else {
-            g_rejN++;                                               // fuera de banda: se ignora
-          }
-        }
-        if (accept) {
-          bool nuevo = isnan(g_sP) || fabsf(peso - g_sP) >= WEIGH_EPS;
-          g_sP = peso; g_sPr = precio; g_sT = total;
-          g_minLoad = peso;                                         // referencia nueva
-          g_state = WS_STABLE;
-          if (!g_capMs) g_capMs = now;
-          g_capN++;
-          g_maxPost = NAN;
-          if (nuevo)
-            Serial.printf("[pesaje] peso estable: %.2f  (precio %.2f  total %.2f)\n",
-                          (double)peso, (double)precio, (double)total);
-        }
-      }
-#else
-      bool quiet = (now - g_pMoveMs >= 250);
-      bool stbl  = quiet && (stableHint || now - g_pMoveMs >= WEIGH_STABLE_MS);
-      if (stbl) {
-        bool nuevo = isnan(g_sP) || fabsf(peso - g_sP) >= WEIGH_EPS;
-        g_sP = peso; g_sPr = precio; g_sT = total;
-        g_minLoad = peso;                                           // referencia nueva
-        g_state = WS_STABLE;
-        if (!g_capMs) g_capMs = now;
-        g_capN++;
-        g_maxPost = NAN;
-        if (nuevo)
-          Serial.printf("[pesaje] peso estable: %.2f  (precio %.2f  total %.2f)\n",
-                        (double)peso, (double)precio, (double)total);
-      }
-#endif
-      return;
-    }
-    // la plataforma cayo por debajo del umbral -> a CONFIRMANDO
-    dropIfImplausible();
-    g_phase = PH_CONFIRM;
-    g_confirmMs = now;
-    g_negMs = 0;
-    g_state = WS_EMPTY;
-    return;
-
-  // ------------------------------------------------------------ CONFIRMANDO
-  case PH_CONFIRM: {
-    if (peso < g_dip) g_dip = peso;                 // rebote de la celda al retirar
-
-    // (a) volvio a haber carga -> cambio de gaveta
-    if (loaded) {
-      if      (sawRealUnload()) commitPending("retirado (cambio de gaveta)");
-      else if (!isnan(g_sP)) {
-        Serial.println("[pesaje] carga tras un cero limpio (tara?) -> pendiente descartado");
-        g_diagCnt.tares++;
-        diagLog("DESCARTE carga tras cero limpio v=%.1f", (double)g_sP);
-      }
-      else if (!tryRescue("retirado, cambio de gaveta (ESTIMADO)")) logLost("cambio");
-      smStartLoad(peso);
-      return;
-    }
-    // (b) plataforma en NEGATIVO sostenido -> aun habia peso bruto = hubo TARA
-    if (peso <= -WEIGH_ZERO_THRESH) {
-      if (g_negMs == 0) g_negMs = now;
-      if (now - g_negMs >= WEIGH_ZERO_MS) {
-        if (sawRealUnload()) commitPending("retirado (con tara activa)");  // habia producto real
-        else if (!isnan(g_sP)) {
-          Serial.printf("[pesaje] TARA (plataforma en %.2f) -> pendiente descartado\n", (double)peso);
-          g_diagCnt.tares++;
-          diagLog("TARA v=%.1f plataforma=%.1f", (double)g_sP, (double)peso);
-        } else if (!tryRescue("retirado con tara (ESTIMADO)")) {
-          Serial.printf("[pesaje] SIN ASENTAR (plataforma en %.2f) -> gaveta NO guardada\n", (double)peso);
-          logLost("neg");
-        }
-        smReset();
-      }
-      return;
-    }
-    g_negMs = 0;
-    // (c) plataforma en ~0.  ¿fue RETIRO?  -> paso por intermedios (sawRealUnload)
-    //     O la celda reboto a negativo (g_dip).  Una TARA no cumple ninguna.
-#if WEIGH_V2
-    bool     realUnload = sawRealUnload() || (g_dip <= -WEIGH_DIP);
-    uint32_t win        = realUnload ? WEIGH_SETTLE_MS : WEIGH_CONFIRM_MS;
-#else
-    bool     realUnload = sawRealUnload();
-    uint32_t win        = WEIGH_CONFIRM_MS;
-#endif
-    if (now - g_confirmMs >= win) {
-      if      (realUnload)   commitPending("retirado");
-      else if (!isnan(g_sP)) {
-        Serial.printf("[pesaje] cero limpio (dip %.2f) sin descarga (tara?) -> no se guarda\n", (double)g_dip);
-        g_diagCnt.tares++;
-        diagLog("TARA(c) v=%.1f dip=%.2f", (double)g_sP, (double)g_dip);
-      } else if (!tryRescue("retirado (ESTIMADO)")) {
-        Serial.println("[pesaje] cero sin lectura estable -> nada");
-        logLost("cero");
-      }
-      smReset();
-    }
-    return;
+  if (g_phase == PH_EMPTY) {
+    if (peso < WEIGH_MIN_LOAD) return;
+    smStartLoad(now);                                    // y esta misma lectura ya cuenta (abajo)
   }
 
-  }  // switch
+  // ------------------------------------------------------------ CON CARGA
+  if (peso <= WEIGH_ZERO_THRESH) {                       // paso por cero o quedo negativa...
+    if (++g_zeroN >= WEIGH_ZERO_N) closeLoad(now, true); // ...varias lecturas seguidas: no un glitch
+    return;
+  }
+  g_zeroN = 0;
+  g_ldN++;
+  if (isnan(g_ldMax) || peso > g_ldMax) g_ldMax = peso;
+  if (isnan(g_ldMin) || peso < g_ldMin) g_ldMin = peso;
+  g_ldPr = precio;
+  if (isnan(g_maxPost) || peso > g_maxPost) g_maxPost = peso;
+  // tiempo pasado en cada valor, contando solo lecturas casi QUIETAS (la subida, la bajada
+  // al retirar y el pico de una presion cambian rapido y no cuentan)
+  if (peso >= WEIGH_MIN_LOAD && !isnan(g_prevP) && fabsf(peso - g_prevP) <= WEIGH_BAND) {
+    int bi = (int)((peso - WEIGH_MIN_LOAD) / SUS_STEP);
+    if (bi >= 0 && bi < SUS_BINS) { g_susN[bi]++; g_susSum[bi] += peso; }
+  }
+  g_prevP = peso;
+  if (fresh) {
+    if (peso >= WEIGH_MIN_LOAD && !isnan(g_prevF) && fabsf(peso - g_prevF) <= WEIGH_BAND) {
+      int bi = (int)((peso - WEIGH_MIN_LOAD) / SUS_STEP);
+      if (bi >= 0 && bi < SUS_BINS) { g_qN[bi]++; g_qSum[bi] += peso; }
+    }
+    g_prevF = peso;
+  }
+
+  // ---- captura por VENTANA TOLERANTE ----
+  // Un valor se da por ASENTADO si las lecturas de los ultimos WEIGH_WIN_MS
+  // varian menos de WEIGH_BAND (un escurrido de 0,1 lb/s cabe de sobra).
+  // La referencia es el primer valor asentado de ESTA gaveta.  Despues solo se
+  // aceptan valores asentados a menos de max(WEIGH_TOL_ABS, WEIGH_TOL_PCT %) de
+  // ella: la caida al retirar la gaveta ni forma un tramo asentado ni entra en ese
+  // margen -> nunca se guarda un valor de la bajada.  Solo en los primeros
+  // WEIGH_PLACE_MS la referencia puede SUBIR (gaveta posada despacio).
+  winPush(now, peso);
+  // un valor por debajo del minimo nunca es "el estable" de una gaveta: asi la cola de la
+  // bajada (0,1-0,3 lb un rato, sin tara) no puede ganarle al valor estimado
+  if (peso < WEIGH_MIN_LOAD || !winFlat(now)) return;
+  bool accept = false;
+  if (isnan(g_refP)) {
+    g_refP = peso;
+    accept = true;
+  } else {
+    float tol = fmaxf(WEIGH_TOL_ABS, g_refP * (WEIGH_TOL_PCT / 100.0f));
+    if (fabsf(peso - g_refP) <= tol) {
+      accept = true;
+    } else if (peso > g_refP + tol && (now - g_loadMs) <= WEIGH_PLACE_MS) {
+      g_refP = peso;
+      accept = true;
+    } else {
+      g_rejN++;                                          // fuera de banda: se ignora
+    }
+  }
+  if (!accept) return;
+  bool nuevo = isnan(g_sP) || fabsf(peso - g_sP) >= WEIGH_EPS;
+  g_sP = peso; g_sPr = precio; g_sT = total;
+  g_state = WS_STABLE;
+  if (!g_capMs) g_capMs = now;
+  g_lastAccMs = now;
+  g_capN++;
+  g_maxPost = NAN;
+  if (nuevo)
+    Serial.printf("[pesaje] peso estable: %.2f  (precio %.2f  total %.2f)\n",
+                  (double)peso, (double)precio, (double)total);
 }

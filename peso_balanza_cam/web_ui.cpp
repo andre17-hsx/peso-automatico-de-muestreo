@@ -3,6 +3,7 @@
 //
 //  Rutas (las de bus solo si ENABLE_SNIFFER):
 //    /                 panel
+//    /icon.png, /manifest.json   icono y nombre "Balanza" para el acceso directo del celular
 //    /api              JSON estado en vivo (poll 1 s)
 //    /weighings        JSON historial de pesajes capturados
 //    /weighings.csv    historial en CSV (para descargar)
@@ -19,6 +20,8 @@
 #include "sniffer_tm1640.h"
 #include "weighlog.h"
 #include "diaglog.h"
+#include "icon_png.h"
+#include "fan.h"
 #include <WiFi.h>
 #include <Preferences.h>
 #include <time.h>
@@ -140,6 +143,11 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
 <meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name=theme-color media="(prefers-color-scheme:light)" content="#e7edf7">
 <meta name=theme-color media="(prefers-color-scheme:dark)" content="#0b1220">
+<link rel=icon type="image/png" href="/icon.png"><link rel=apple-touch-icon href="/icon.png">
+<link rel=manifest href="/manifest.json">
+<meta name=application-name content="Balanza"><meta name=apple-mobile-web-app-title content="Balanza">
+<meta name=mobile-web-app-capable content=yes><meta name=apple-mobile-web-app-capable content=yes>
+<meta name=apple-mobile-web-app-status-bar-style content=default>
 <title>Balanza</title>
 <script>(function(){try{var t=localStorage.getItem('bz-theme');if(t)document.documentElement.dataset.theme=t}catch(e){}})()</script>
 <style>
@@ -544,6 +552,7 @@ async function tick(){
   el('pill').className='pill '+st[0];
   el('pilltx').textContent=st[1];
   el('sub').textContent=(j.capstate=='estable')?'se guarda al retirar la gaveta':('fuente: '+j.combined.source);
+  if(j.sim) el('sub').textContent='MODO SIMULADOR: pesajes FALSOS';
   var L=j.last;
   if(L){
     el('last').style.display='block';
@@ -796,6 +805,21 @@ static void handleRoot() {
   S->send_P(200, "text/html", PAGE_INDEX);
 }
 
+// Icono y manifiesto: el celular los usa para el acceso directo "Balanza" en su pantalla
+// de inicio (Android: "Anadir a pantalla de inicio"; iPhone: Compartir -> "Agregar a inicio").
+static void handleIcon() {
+  S->sendHeader("Cache-Control", "max-age=604800");
+  S->send_P(200, "image/png", (const char*)ICON_PNG, sizeof(ICON_PNG));
+}
+
+static void handleManifest() {
+  S->sendHeader("Cache-Control", "max-age=86400");
+  S->send(200, "application/manifest+json", F(
+    "{\"name\":\"Balanza\",\"short_name\":\"Balanza\",\"start_url\":\"/\",\"scope\":\"/\","
+    "\"display\":\"standalone\",\"background_color\":\"#0b1220\",\"theme_color\":\"#0b1220\","
+    "\"icons\":[{\"src\":\"/icon.png\",\"sizes\":\"192x192\",\"type\":\"image/png\",\"purpose\":\"any\"}]}"));
+}
+
 static void handleApi() {
   SnifState s; snifGet(s);
   const bool snifEn = ENABLE_SNIFFER;
@@ -856,6 +880,11 @@ static void handleApi() {
   h += ",\"capstate\":\""; h += weighStateName(); h += "\"";
   h += ",\"rssi\":"; h += (int)WiFi.RSSI();
   h += ",\"uptime\":"; h += (unsigned long)(millis() / 1000);
+  h += ",\"fan\":"; h += fanIsOn() ? "true" : "false";          // ventilacion de la caja
+  h += ",\"tchip\":"; jnum(h, fanTempAvg(), 0);
+#if WEIGH_SIM
+  h += ",\"sim\":true";                       // simulador de pesajes activo (config.h)
+#endif
   h += "}";
 
   S->sendHeader("Cache-Control", "no-store");
@@ -1330,6 +1359,9 @@ void webBegin(WebServer& srv) {
   S = &srv;
   infoLoad();                                          // sector / piscina guardados
   S->on("/",    handleRoot);
+  S->on("/icon.png",      handleIcon);
+  S->on("/favicon.ico",   handleIcon);       // los navegadores la piden solos; mejor el icono que un 302
+  S->on("/manifest.json", handleManifest);
   S->on("/api", handleApi);
   S->on("/weighings",       handleWeighings);
   S->on("/weighings.csv",   handleWeighingsCsv);

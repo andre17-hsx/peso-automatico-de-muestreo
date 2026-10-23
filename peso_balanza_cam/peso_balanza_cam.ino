@@ -75,6 +75,8 @@
 #include "weighlog.h"
 #include "diaglog.h"
 #include "web_ui.h"
+#include "weighsim.h"
+#include "fan.h"
 #include <esp_wifi.h>
 
 #if WIFI_CAPTIVE
@@ -119,6 +121,9 @@ static void wifiStartAP() {
 #else
   WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASS);
 #endif
+#ifdef WIFI_TX_POWER
+  WiFi.setTxPower(WIFI_TX_POWER);
+#endif
   Serial.printf("\n  ================ RED PROPIA DEL ESP32 ================\n"
                 "   WiFi:   %s\n   Clave:  %s\n   Abrir:  http://%s/\n"
                 "  =====================================================\n",
@@ -153,6 +158,8 @@ static void wifiRecoverAP(const char* why) {
   g_apRecoverCount++;
   Serial.printf("[wifi] recuperando la red propia (%s) -> recuperacion #%lu\n",
                 why, (unsigned long)g_apRecoverCount);
+  diagLog("WIFI AP reinicio #%lu %s heap=%lu", (unsigned long)g_apRecoverCount, why,
+          (unsigned long)ESP.getFreeHeap());
   wifiStartAP();
 }
 
@@ -199,7 +206,10 @@ static void diagStatus() {
     lastCnt = s.refreshCount; lastMs = nowMs;
   }
 #endif
-  diagLog("ST cli=%d rssi[%s] heap=%lu/%lu fps=%u", WiFi.softAPgetStationNum(), rs,
+  float tc = temperatureRead();                  // temperatura interna del chip (aprox., +-2-3 C)
+  if (tc > g_diagCnt.tempMaxC) g_diagCnt.tempMaxC = tc;
+  // formato compacto: con 4 celulares sigue cabiendo en los 64 caracteres de la linea
+  diagLog("ST c=%d t=%.0f r[%s] h=%lu/%lu f=%u", WiFi.softAPgetStationNum(), (double)tc, rs,
           (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap(), fps);
 }
 
@@ -249,9 +259,17 @@ static void weighTaskFn(void*) {
     // mejor el transitorio al retirar la gaveta rapido.
     if (millis() - tw >= WEIGH_FEED_MS) {
       tw = millis();
+#if WEIGH_SIM
+      float p, pr, t; simSample(tw, &p, &pr, &t);  // gavetas FALSAS (config.h: WEIGH_SIM)
+      weighFeed(p, pr, t, false, true);
+#else
       SnifState s; snifGet(s);
+      static uint32_t lastRefresh = 0;               // solo los refrescos NUEVOS cuentan como "quieto"
+      bool fresh = (s.refreshCount != lastRefresh);
+      lastRefresh = s.refreshCount;
       weighFeed(s.pesoVal, s.precioVal, s.totalVal,
-                s.stable, s.valid && !isnan(s.pesoVal));
+                s.stable, s.valid && !isnan(s.pesoVal), fresh);
+#endif
     }
     vTaskDelay(pdMS_TO_TICKS(1));     // cede CPU; el ritmo real lo marca WEIGH_FEED_MS arriba
   }
@@ -339,6 +357,7 @@ static void wifiConnect() {
 
 // ---------------------------------------------------------------------------
 void setup() {
+  fanBegin();                                   // ventiladores apagados desde el primer instante
   Serial.begin(115200);
   delay(200);
   setCpuFrequencyMhz(240);                      // maximo: captura del bus + servidor web
@@ -353,8 +372,12 @@ void setup() {
   snifBegin();
   Serial.printf("[snif] escuchando el bus  SL=GPIO%d  DA=GPIO%d\n",
                 SNIF_PIN_SL, SNIF_PIN_DA);
+#if WEIGH_SIM
+  simBegin();
+#endif
   // mismo nucleo que este setup() (ver comentario junto a weighTaskFn mas arriba)
-  xTaskCreatePinnedToCore(weighTaskFn, "weigh", 4096, nullptr, 1, nullptr, xPortGetCoreID());
+  // 8 KB, como loop(): el guardado (NVS + archivo LittleFS + printf) corre en esta tarea
+  xTaskCreatePinnedToCore(weighTaskFn, "weigh", 8192, nullptr, 1, nullptr, xPortGetCoreID());
 #endif
 
   wifiConnect();
@@ -396,12 +419,14 @@ void loop() {
         s.precio, (double)s.precioVal,
         s.total,  (double)s.totalVal); }
 #endif
-    Serial.printf("  pesaje:%s cap:%.2f  rssi:%d  heap:%lu(min %lu)  APcli:%d  APrec:%lu\n",
+    Serial.printf("  pesaje:%s cap:%.2f  rssi:%d  heap:%lu(min %lu)  APcli:%d  APrec:%lu  vent:%d t:%.0f\n",
                   weighStateName(), weighLatched(), (int)WiFi.RSSI(),
                   (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap(),
-                  WiFi.softAPgetStationNum(), (unsigned long)g_apRecoverCount);
+                  WiFi.softAPgetStationNum(), (unsigned long)g_apRecoverCount,
+                  fanIsOn() ? 1 : 0, (double)fanTempAvg());
     wifiCheckHealth();     // red de seguridad: por si el AP quedo "zombie" sin avisar
   }
+  fanUpdate(millis());     // ventilacion de la caja (mide cada FAN_CHECK_MS)
 
 #if DIAG_LOG
   {

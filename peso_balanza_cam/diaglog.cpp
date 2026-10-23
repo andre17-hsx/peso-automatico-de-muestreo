@@ -75,18 +75,21 @@ void diagDump(DiagSink sink, void* ctx) {
   char hdr[1024];
   int n = snprintf(hdr, sizeof(hdr),
     "== Diagnostico (en RAM: se borra al reiniciar) ==\n"
-    "encendido hace %lu s | heap libre %lu (min %lu)\n"
-    "pesajes guardados %lu | perdidos (sin asentar) %lu | taras/descartes %lu\n"
+    "encendido hace %lu s | heap libre %lu (min %lu) | temp chip max %.0f C\n"
+    "pesajes guardados %lu | perdidos %lu\n"
+    "ventiladores: %s ahora | %lu min encendidos (sin contar el periodo actual)\n"
     "celulares: conexiones %lu | desconexiones %lu\n"
     "bucle: %lu vueltas lentas | max %lu ms | max web %lu ms\n"
     "lineas escritas %lu (se conservan las ultimas %d)\n"
     "motivo WiFi: 8 el celular se fue | 3 deauth | 4 inactividad | 2 auth expirada | 15 handshake\n"
-    "OK peso r|c|d = guardado (r retiro, c cambio de gaveta, d display cerrado) | carga = ms puesta\n"
+    "OK peso r|e = guardado al pasar por cero (r valor estable, e estimado = max x factor) | carga = ms puesta\n"
     "1a = ms hasta el 1er valor asentado | n = lecturas asentadas | rech = asentadas fuera de banda\n"
-    "PERDIDO = gaveta que no llego a asentar | DESCARTE/TARA = tara descartada a proposito\n"
+    "PERDIDO = gaveta (>= peso minimo) que no se pudo guardar: muy corta, liviana o display apagado\n"
     "-----\n",
     (unsigned long)(millis() / 1000), (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap(),
-    (unsigned long)g_diagCnt.traysOk, (unsigned long)g_diagCnt.traysLost, (unsigned long)g_diagCnt.tares,
+    (double)g_diagCnt.tempMaxC,
+    (unsigned long)g_diagCnt.traysOk, (unsigned long)g_diagCnt.traysLost,
+    g_diagCnt.fanOn ? "ON" : "OFF", (unsigned long)(g_diagCnt.fanOnS / 60),
     (unsigned long)g_diagCnt.wifiConn, (unsigned long)g_diagCnt.wifiDisc,
     (unsigned long)g_diagCnt.slowLoops, (unsigned long)g_diagCnt.maxLoopMs, (unsigned long)g_diagCnt.maxWebMs,
     (unsigned long)s_total, DIAG_LINES);

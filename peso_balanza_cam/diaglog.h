@@ -20,13 +20,15 @@
 
 struct DiagCounters {
   uint32_t traysOk;        // pesajes guardados
-  uint32_t traysLost;      // gavetas puestas que NO se guardaron por no llegar a asentar
-  uint32_t tares;          // taras / cambios descartados a proposito
+  uint32_t traysLost;      // gavetas (>= WEIGH_MIN_LOAD) que NO se pudieron guardar
   uint32_t wifiConn;       // celulares que se conectaron
   uint32_t wifiDisc;       // celulares que se desconectaron
   uint32_t slowLoops;      // vueltas del bucle principal mas lentas que el limite
   uint32_t maxLoopMs;      // la vuelta mas lenta
   uint32_t maxWebMs;       // lo mas que tardo server.handleClient() en una vuelta
+  float    tempMaxC;       // temperatura maxima del chip vista en los resumenes ST
+  uint32_t fanOnS;         // segundos que los ventiladores estuvieron encendidos (periodos ya cerrados)
+  bool     fanOn;          // ventiladores encendidos ahora
 };
 extern DiagCounters g_diagCnt;
 

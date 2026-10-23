@@ -65,11 +65,20 @@ para probar el panel web sin la balanza conectada. No hay otro método de lectur
 | 1 | Se une al router (`WIFI_SSID`/`WIFI_PASS`). Si no puede en 15 s y `WIFI_AP_FALLBACK 1`, crea su red. |
 | 2 | Las dos: su red **siempre**, y además se une al router si lo ve (sin bloquear). Sirve para oficina. |
 
-**Portal cautivo** (`WIFI_CAPTIVE 1`): al conectar el móvil a la red del ESP, el
-sistema operativo abre solo el panel (como el login de un aeropuerto). Lo hace un
-DNS "atrápalo-todo" en el ESP + un redirect a `192.168.4.1` para cualquier URL
-desconocida. Si el mini-navegador del móvil va lento, ciérralo y abre el navegador
-normal → `192.168.4.1`.
+**Portal cautivo** (`WIFI_CAPTIVE`, **en `0` en prueba desde 2026-10-07**): con `1`, al
+conectar el móvil a la red del ESP el sistema operativo abre solo el panel (como el login
+de un aeropuerto). Lo hace un DNS "atrápalo-todo" en el ESP + un redirect a `192.168.4.1`
+para cualquier URL desconocida. Contra: ese DNS también trae al ESP el tráfico de fondo de
+las apps de los celulares (más carga para su servidor web de un solo hilo). Con `0` no hay
+DNS: el panel se abre a mano en `http://192.168.4.1/` o con el acceso directo de abajo.
+
+**Acceso directo "Balanza" en la pantalla de inicio.** Con el celular conectado a la red del
+ESP, abre `http://192.168.4.1/` y: **Android (Chrome)** menú ⋮ → *Añadir a pantalla de inicio*;
+**iPhone (Safari)** Compartir → *Agregar a inicio*. Queda un icono "Balanza" (lo sirve el ESP:
+`/icon.png`, `/manifest.json`). En iPhone se abre a pantalla completa como una app; en Android
+abre una pestaña de Chrome (una app "instalada" de verdad exigiría HTTPS). Si el celular no
+está en la red de la balanza, el icono muestra un error: conéctate primero (deja activado
+*conectar automáticamente* en esa red).
 
 Sin internet no hay NTP: el **móvil del operario pone la hora** al abrir el panel
 (`/settime`), así el historial lleva hora real. Si tampoco, queda solo el orden.
@@ -105,10 +114,17 @@ valen para cualquier placa. El ISR lee `GPIO_IN_REG` → usa pines ≤ 31.
 - **La carcasa metálica de la balanza bloquea el WiFi** (jaula de Faraday): con la
   placa dentro y la tapa cerrada la red no aparece. El ESP32-S3 va en una **caja de
   plástico externa**, con solo los 3 cables del sniffer más la alimentación.
-- Alimentación prevista desde la **batería de la propia balanza** (~4,2 V a plena carga,
-  una celda de Li-ion): un convertidor **buck-boost** (TPS63020 / TPS63802, no un buck
-  simple, porque la celda baja por debajo de 3,3 V al descargarse) ajustado a **3,3 V** y
-  conectado al pin **`3V3`** de la placa.
+- Alimentación desde la **batería de la propia balanza** (una celda de Li-ion, ~4,1–4,2 V
+  a plena carga): un convertidor **buck-boost TPS63020** (no un buck simple, porque la
+  celda baja por debajo de 3,3 V al descargarse) ajustado a **3,3 V** y conectado al pin
+  **`3V3`** de la placa (no al `5V`). Su entrada admite como máximo 5,5 V: mide la
+  batería una vez con el cargador de la balanza enchufado.
+- **Cuidado con descargar la celda en exceso**: el TPS63020 sigue funcionando hasta
+  ~1,8 V, y la celda se daña por debajo de ~3,0 V. Si la placa se queda conectada con la
+  balanza apagada, sigue consumiendo. Toma la alimentación **después del interruptor
+  de la balanza** o pon un interruptor propio, y apágalo al terminar.
+- **No enchufes el USB con la batería conectada** (dos fuentes en el `3V3`): apaga la
+  alimentación antes de flashear o conectar al PC.
 - **No conectes nada a `BATTERY+` / `BATTERY-`** de la Super Mini: tiene su propio
   cargador de batería y no debe pelearse con el de la balanza.
 - Recomendado un condensador de salida (electrolítico 220–470 µF + cerámico 100 nF) lo
@@ -118,125 +134,205 @@ valen para cualquier placa. El ISR lee `GPIO_IN_REG` → usa pines ≤ 31.
   de media → la autonomía en horas ≈ mAh de la batería ÷ mA. Es una estimación, no una
   medición; conviene medirla en la placa real.
 
+### Ventilación de la caja (`FAN_ENABLE`)
+
+Dos ventiladores pequeños que trabajan **juntos**: uno mete aire en la caja de plástico y el
+otro lo saca. Se encienden y apagan a la vez según la **temperatura interna del chip** (la
+misma `t=` de `/log`), con histéresis: **ON al llegar a `FAN_ON_C` (68 °C)**, **OFF al bajar a
+`FAN_OFF_C` (60 °C)**, usando la media de ~30 s (el sensor tiene ±2–3 °C de ruido) y al menos
+`FAN_MIN_ON_MS` (60 s) encendidos. Si el sensor no da dato, se encienden (a prueba de fallos).
+Lo controla `loop()` cada `FAN_CHECK_MS`, nunca la tarea del pesaje. Referencias: 59 °C en la
+oficina, 69–70 °C al aire libre (2026-10-07).
+
+#### Conexión
+
+Vista general: los ventiladores tienen su **propia rama** desde la batería, antes del
+TPS63020, y su retorno va directo al borne − (masa en estrella).
+
+```
+ BATERÍA Li-ion
+  (+) ──[F1 1 A lento]──[SW]──●──────────────────────────► TPS63020 VIN ──► pin 3V3 Super Mini
+                              │
+                              │  +V VENT (cable propio, 22–24 AWG)
+                              ●──[F2 PTC 0,5 A]──●──┬── C4 220 µF/16 V (+)
+                                (opcional)        │  ├── C7 100 nF
+                                                  │  │
+                                                  ├──┼── canal 1  (GPIO5 → Q1 → FAN1)
+                                                  └──┼── canal 2  (GPIO6 → Q2 → FAN2)
+                                                     │
+  (−) ═══════════════ MASA EN ESTRELLA (borne − de la batería) ══════════╧═══ GND TPS63020
+                                                                            ═══ GND Super Mini
+                                                                            ═══ GND balanza (sniffer)
+```
+
+Un canal en detalle. Se monta dos veces: canal 1 = GPIO5, Q1, D1, C5, R1, R2; canal 2 =
+GPIO6, Q2, D2, C6, R3, R4.
+
+```
+ +V VENT ────────●──────────────────●──────────────────●
+                 │                  │                  │
+                 │ cátodo (banda)   │                  │
+            D1  ─┴─               FAN1 (+)            ─┴─
+          1N5819 ▲                ( M )               ─┬─  C5  100 nF cerámico
+                 │ ánodo          FAN1 (−)             │       (en los bornes del ventilador)
+                 │                  │                  │
+                 ●──────────────────●──────────────────●
+                                    │
+                                    │ D  (pata 3)
+                                 ┌──┴──┐
+ GPIO5 ──[R1 100 Ω]──●───────────┤G    │  Q1  AO3400A
+                     │  (pata 1) └──┬──┘
+                     │              │ S  (pata 2)
+                 [R2 100 kΩ]        │
+                     │              │
+ BAT− (estrella) ════●══════════════●═══════  (cable directo al borne −, no por el pin GND del ESP)
+```
+
+Polaridades (donde suelen estar los errores):
+- **D1/D2**: la banda (cátodo) va a +V VENT. Al revés, cortocircuita la rama.
+- **C4**: la pata larga (+) va a +V VENT y la franja (−) a BAT−.
+- **AO3400A** (SOT-23, visto desde arriba): pata 1 = G, pata 2 = S, pata 3 = D (la que
+  queda sola).
+- En la Super Mini, `GPIO5` y `GPIO6` están en la tira izquierda (pines "5" y "6", entre
+  el 4 y el 7). `GND` está en la tira derecha, segundo desde arriba.
+
+#### Materiales
+
+| Ref. | Valor | Tipo | Cant. | Función |
+|---|---|---|---|---|
+| R1, R3 | 100 Ω ¼ W 5 % | película | 2 | Limita el pico de carga de la puerta (33 mA < 40 mA del GPIO) y evita oscilaciones |
+| R2, R4 | 100 kΩ ¼ W 5 % | película | 2 | MOSFET apagado al arrancar y al flashear |
+| Q1, Q2 | AO3400A (30 V, 5,7 A, < 48 mΩ a 2,5 V) | SOT-23 | 2 | Conduce del todo con 3,3 V en la puerta |
+| D1, D2 | 1N5819 (1 A, 40 V Schottky) | DO-41 (SMD: SS14) | 2 | Absorbe el pico al apagar el motor |
+| C5, C6 | 100 nF 50 V X7R ("104") | cerámico | 2 | Ruido de la electrónica del ventilador |
+| C4 | 220 µF 16 V, 105 °C | electrolítico radial | 1 | Reserva local para el arranque de los motores |
+| C7 | 100 nF 50 V X7R | cerámico | 1 | Desacople en alta frecuencia, junto a C4 |
+| F1 | fusible 1 A lento (5×20) o PTC 1,1 A (MF-R110) | portafusible | 1 | Protege toda la instalación |
+| F2 (opcional) | PTC 0,5 A (MF-R050) | radial | 1 | Un ventilador en corto corta solo su rama |
+
+En formato de patas largas (TO-220), el MOSFET puede ser un **IRLB8721** (patas G-D-S de
+izquierda a derecha, visto de frente). **No uses IRF520** ni los módulos que lo traen:
+necesitan ~10 V en la puerta y con 3,3 V apenas conducen.
+
+#### Montaje
+
+- **Nunca** el ventilador directo al GPIO (da ~40 mA; un ventilador pide 60–200 mA).
+- **+V VENT sale de la batería**, no del TPS63020 ni del pin `3V3`: el arranque del motor
+  podría hundir los 3,3 V y reiniciar el ESP.
+- **El retorno va en su propio cable**: las fuentes de Q1/Q2 y R2/R4 van directo al borne
+  − de la batería, para que la corriente de los motores no pase por la masa del ESP ni del
+  sniffer.
+- **D1/D2 junto a los MOSFET** (protegen el drenador). **C5/C6 en los bornes de cada
+  ventilador. C4/C7 al final de +V VENT**, junto a los ventiladores.
+- **Cables de los ventiladores en par trenzado**, lejos de `DA`/`SL`: `GPIO5` está pegado
+  a `GPIO4` (DA) en la tira de pines.
+- **Ventiladores de 5 V**: con la celda a 3,6–4,1 V giran a ~70–80 %. Comprueba que
+  **arrancan solos desde parados con 3,5 V**; si no, usa ventiladores de 3,3–3,7 V o un
+  elevador a 5 V solo para esta rama. Uno de 12 V no arranca.
+- El estado sale en `/api` (`"fan":true`, `"tchip"`), en el latido del Monitor Serie
+  (`vent:1 t:61`), en `/log` como `VENT ON t=61` / `VENT OFF t=52` y en la cabecera de `/log`
+  (minutos encendidos). `FAN_ENABLE 0` lo desactiva.
+
 ---
 
 ## 3. Cuándo se guarda un pesaje — máquina de estados
 
-`weighlog.cpp`, común a los dos métodos:
+`weighlog.cpp`. Regla simple (desde 2026-10-07):
 
 ```
- VACIA ──(peso > WEIGH_ZERO_THRESH)──▶ CON CARGA
- CON CARGA (mientras el peso esté ESTABLE se RECUERDA su valor)
-   └─ la plataforma cae por debajo del umbral ──▶ CONFIRMANDO (~WEIGH_CONFIRM_MS)
-        · el peso BAJÓ de verdad (pasó por valores WEIGH_PARTIAL menores, o
-          < WEIGH_PARTIAL_FRAC del estable si el neto es pequeño; con carga aún
-          presente) ──────────────────────────────▶ se GUARDA  + weighOnCommit
-        · salto LIMPIO a 0  ó  plataforma en NEGATIVO ──▶ es una TARA, NO se guarda
-        · vuelve a haber carga (cambio de gaveta) ──▶ guarda el pendiente y sigue
+ VACÍA ──(peso ≥ WEIGH_MIN_LOAD, 12 lb)──▶ CON CARGA
+ CON CARGA: se busca el valor ESTABLE (ventana tolerante) y se recuerda el MÁXIMO
+   └─ el peso pasa por CERO o queda NEGATIVO (≤ WEIGH_ZERO_THRESH) ──▶ se cierra la gaveta:
+        1. hubo valor estable ≥ 12 lb ─────────────▶ se GUARDA ese valor     ('r' en /log)
+        2. no lo hubo ─────────────▶ se GUARDA el valor donde estuvo QUIETA más tiempo ('e … sost')
+        (los dos solo si la gaveta estuvo puesta ≥ WEIGH_MIN_MS, 600 ms; si no → PERDIDO)
+ Lecturas > WEIGH_MAX_LOAD (80 lb) se ignoran (prueba de display "888.8", presión muy fuerte).
 ```
 
-- **Distingue una TARA de un retiro real** por *cómo* llega el peso a cero: un
-  retiro hace oscilar la celda de carga (pasa por valores intermedios); una tara
-  es un salto instantáneo y/o deja la plataforma en negativo.
-- Un retiro **rápido** se sigue guardando (la celda siempre oscila al descargarse).
-- Re-tarar a mitad de sesión funciona solo: ese salto a 0 se ignora, las
-  siguientes gavetas se guardan normal.
-- "Estable" = **captura por ventana tolerante** (`WEIGH_PLATEAU 1`, ver abajo); con
-  `WEIGH_PLATEAU 0` se usa "número quieto `WEIGH_STABLE_MS`". El punto verde del panel lo calcula el sniffer
-  (el PESO lleva `SNIF_STABLE_N` = 4 refrescos seguidos igual; no viene en el bus): es solo
-  visual y ya no decide qué valor se guarda.
-- **PRECIO y TOTAL** se toman en cada muestra estable (si re-tecleas el precio con
-  el peso puesto, se guarda el precio **nuevo**).
-- Monitor Serie: `[pesaje] carga detectada...` · `[pesaje] retirado -> GUARDADO
-  PESO 1.30 ...` · `[pesaje] TARA (...) -> pendiente descartado`.
+- **Menos de 12 lb es tara o nada**: una gaveta siempre pesa más. Mover o tocar la balanza,
+  re-tarar con la gaveta vacía o el ruido alrededor de cero nunca abren un pesaje, y nunca
+  se guarda un valor (estable ni estimado) por debajo de 12 lb.
+- **Una gaveta por paso por cero**: si se cambia una gaveta por otra sin que el peso llegue a
+  cero, cuentan como una sola (se guarda la primera). En la práctica siempre se quita antes
+  de poner la siguiente.
+- **No se distingue "retiro" de "tara"**: en campo nunca se presiona TARA con una gaveta
+  llena, así que cualquier gaveta que pasa por cero (con tara activa la plataforma vacía marca
+  negativo, p. ej. −9) se guarda, aunque se haya quitado de golpe.
+- **Una presión de la mano antes de quitar la gaveta no sube el valor**: si hubo valor estable
+  (quieto ≥ 0,4 s en total) se guarda ese; si no, el valor donde la lectura estuvo quieta más tiempo (la presión
+  es un pico corto). Probado con la balanza real el 2026-10-07: antes guardaba 40-60 lb para una
+  gaveta de ~23 lb.
+- **Más de 80 lb se ignora** (`WEIGH_MAX_LOAD`): la prueba de display de la balanza al encenderse
+  ("888.8") se guardaba como pesaje. Las gavetas más pesadas vistas pesan ~60 lb.
+- **Nunca se guarda un pesaje sin valor**: si no hay valor estable ni máximo válido, la gaveta
+  queda como `PERDIDO` en `/log`.
+- **600 ms mínimos**: un golpe o apoyo corto de la mano sobre la plataforma no es una gaveta.
+  Una mano apoyada con ≥ 12 lb durante más de 0,6 s sí se guardaría (no se distingue de una
+  gaveta muy rápida).
+- Display ilegible/apagado ≥ `WEIGH_INVALID_MS` con una gaveta puesta: no pasó por cero → no se
+  guarda; queda `PERDIDO(display)`.
+- El punto verde del panel lo calcula el sniffer (el PESO lleva `SNIF_STABLE_N` = 4 refrescos
+  seguidos igual; no viene en el bus): es solo visual y no decide qué valor se guarda.
+- **PRECIO y TOTAL** se toman con el valor estable (o el último precio visto, para el estimado).
+- Monitor Serie: `[pesaje] carga detectada...` · `[pesaje] estable -> GUARDADO PESO 41.30 ...` ·
+  `[pesaje] ESTIMADO -> GUARDADO ...`.
 
 Ajustes en `config.h` (los números son **absolutos, en la unidad de la balanza**: el
 firmware no convierte nada, así que la balanza debe estar en **libras**):
 
 | Parámetro | Qué es | Por defecto |
 |---|---|---|
-| `WEIGH_ZERO_THRESH` | por debajo = plataforma vacía | `0.06` |
-| `WEIGH_CONFIRM_MS` | tiempo de comprobación "¿retiro o tara?" antes de guardar | `1000` |
-| `WEIGH_PARTIAL` | cuánto tiene que bajar el peso con carga para contar como retiro real | `0.085` |
-| `WEIGH_PARTIAL_FRAC` | …o a qué fracción del valor estable (para netos pequeños con tara) | `0.55` |
-| `WEIGH_ZERO_MS` | cuánto dura el negativo para confirmar una tara | `400` |
-| `WEIGH_STABLE_MS` | (solo con `WEIGH_PLATEAU 0`) número quieto → "estable" | `700` |
-| `WEIGH_INVALID_MS` | display apagado este tiempo → cierra | `2500` |
+| `WEIGH_ZERO_THRESH` | por debajo (o igual) durante 3 lecturas seguidas (60 ms, `WEIGH_ZERO_N`) = la gaveta pasó por cero → se cierra; una lectura suelta de 0 no cierra | `0.06` |
+| `WEIGH_MIN_LOAD` | una gaveta empieza al llegar a este peso; menos = tara / nada | `12` |
+| `WEIGH_MAX_LOAD` | lecturas por encima se ignoran (como display ilegible): prueba de display, presión fuerte | `80` |
+| `WEIGH_MIN_MS` | tiempo mínimo puesta para guardarse (un golpe de la mano no es gaveta) | `600` |
+| `WEIGH_INVALID_MS` | display apagado este tiempo con gaveta puesta → se cierra sin guardar | `2500` |
 | `WEIGH_LOG_SIZE` | pesajes recientes que guarda en el buffer de memoria/NVS | `120` |
 | `WEIGH_ARCHIVE` | `1` = además del buffer, guarda **todos** los pesajes en un archivo en flash hasta *Borrar todo*; `0` = solo el buffer | `1` |
-| `WEIGH_V2` | `0` = comportamiento anterior a la ronda ag (sin rebote/anti-meneo/commit rápido) | `1` |
-| `WEIGH_DIP` | el neto rebota a menos de `-esto` al retirar de verdad (la celda rebota; una tara nunca baja de 0) | `0.05` |
-| `WEIGH_SETTLE_MS` | con señal de retiro, guarda a los ~350 ms en vez de `WEIGH_CONFIRM_MS` | `350` |
-| `WEIGH_FEED_MS` | cada cuánto se alimenta la máquina de estados (más muestras = pilla mejor el retiro rápido) | `20` |
-| `WEIGH_PLATEAU` | `1` = captura por ventana tolerante (abajo); `0` = criterio anterior (quieto 250 ms + "estable" del sniffer) | `1` |
+| `WEIGH_FEED_MS` | cada cuánto se alimenta la máquina de estados | `20` |
 | `WEIGH_WIN_MS` | ventana en la que las lecturas deben variar poco para dar un valor por asentado | `250` |
 | `WEIGH_BAND` | cuánto puede variar el peso dentro de esa ventana (el escurrido, ~0,1 lb/s, cabe de sobra) | `0.15` |
 | `WEIGH_TOL_ABS` / `WEIGH_TOL_PCT` | tras el primer valor asentado solo se aceptan otros a menos de `max(TOL_ABS, TOL_PCT %)` de él | `1.0` / `3.0` |
-| `WEIGH_PLACE_MS` | durante este tiempo desde que se detecta la carga, la referencia todavía puede SUBIR (gaveta posada despacio o sostenida con la mano) | `1000` |
-| `WEIGH_PLAUS_FRAC` | descarta el valor asentado si después de asentarse el peso subió por encima de `valor / PLAUS_FRAC` (ver abajo) | `0.7` |
-| `WEIGH_RESCUE_FRAC` | rescate: si una gaveta se retira sin valor asentado válido, se guarda este factor × el máximo visto (0 = desactivado; ver abajo) | `0.92` |
-| `WEIGH_RESCUE_MIN_LB` / `WEIGH_RESCUE_MIN_MS` | el rescate solo actúa si el máximo es ≥ este peso y la gaveta estuvo puesta ≥ este tiempo (descarta roces) | `15` / `600` |
+| `WEIGH_PLACE_MS` | durante este tiempo desde que empieza la gaveta, la referencia todavía puede SUBIR (gaveta posada despacio) | `1000` |
+| `WEIGH_PLAUS_FRAC` / `WEIGH_PLAUS_HOLD_MS` | caso "pausa a mitad de colocación": un estable que estuvo quieto en total < 400 ms y después el peso subió por encima de `valor / 0,7` se descarta | `0.7` / `400` |
+| `WEIGH_RESCUE_FRAC` | en ese caso de pausa (o si la lectura nunca estuvo quieta) se guarda este factor × el máximo | `0.92` |
 | `DIAG_LOG` | `1` = registro de diagnóstico `/log` (ver sección 8); `0` = desactivado | `1` |
-| `DIAG_LOG_LINES` | líneas que conserva `/log` en RAM (64 bytes cada una); de una jornada real salieron ~4 líneas/min, así que 1024 alcanza para ~4 h seguidas | `1024` |
+| `DIAG_LOG_LINES` | líneas que conserva `/log` en RAM (64 bytes cada una); ~4 líneas/min en una jornada real → 256 alcanzan para ~1 h | `256` |
 
-**Captura por ventana tolerante (`WEIGH_PLATEAU 1`).** El criterio anterior exigía que el
-número estuviera *quieto* 250 ms y coincidiera con el "estable" del sniffer; con el escurrido
-del producto (el peso baja ~0,1 lb/s) o una gaveta que se apoya con rebote, muchas veces
-no se cumplía en los ~2 s que la gaveta está en la balanza y el pesaje se perdía. Ahora:
+**Valor estable: captura por ventana tolerante.**
 
 1. Un valor se da por **asentado** si las lecturas de los últimos `WEIGH_WIN_MS` (250 ms)
    varían menos de `WEIGH_BAND` (0,15 lb) — con al menos 5 lecturas y la ventana completa.
-2. El **primer valor asentado de ESA gaveta** es su referencia (se borra con cada gaveta:
-   una de 50 lb seguida de una de 29 lb no se contamina). A partir de ahí solo se aceptan
-   valores asentados a menos de `max(1 lb, 3 %)` de la referencia.
-3. **Nunca se guarda un valor de la caída a cero** al retirar la gaveta: esa bajada
-   recorre decenas de lb en fracciones de segundo, ni forma un tramo asentado ni entra en
-   la banda de la referencia. Lo mismo si el operario presiona la gaveta un instante antes
-   de sacarla (esa subida se ignora).
-4. Solo durante el primer `WEIGH_PLACE_MS` la referencia puede **subir** (la gaveta se posa
-   despacio o la sostiene la mano un instante).
+2. El **primer valor asentado de ESA gaveta** es su referencia (se borra con cada gaveta).
+   A partir de ahí solo se aceptan valores asentados a menos de `max(1 lb, 3 %)` de ella.
+3. **Nunca se guarda un valor de la caída a cero**: esa bajada recorre decenas de lb en
+   fracciones de segundo, ni forma un tramo asentado ni entra en la banda de la referencia.
+4. Solo durante el primer `WEIGH_PLACE_MS` la referencia puede **subir** (gaveta posada despacio).
 5. El valor guardado es el **último** asentado dentro de la banda (el escurrido se refleja
-   como una bajada de décimas), y sigue rigiendo la lógica de tara/retiro de arriba.
+   como una bajada de décimas).
 
-Simulado offline con curvas de gaveta realistas (rebote de la celda, escurrido, display a
-5–20 Hz): guarda ~90 % de las gavetas frente a ~20–50 % del criterio anterior; todas las que
-guardaba el anterior las guarda también el nuevo (diferencia media de valor 0,05 lb); una
-tara no se guarda; el peor valor guardado quedó a 0,35 lb por debajo del peso real. Las
-gavetas que se retiran en menos de ~0,5 s tras posarse siguen sin poder guardarse (no llegan
-a asentar), pero ahora **quedan anotadas** en `/log` como `PERDIDO`.
+**Pausa a mitad de colocación (`WEIGH_PLAUS_FRAC`, `WEIGH_PLAUS_HOLD_MS`).** Encontrado en campo
+(2026-09-30): la gaveta se detiene un instante en un valor que **no es el final** (todavía se
+está posando) y se retira antes de asentar en el peso real (caso real: `5.3` lb; hoy las pausas por
+debajo de 12 lb ya no cuentan, esto cubre las de 12 lb o más). Si ese estable **estuvo quieto en
+total menos de 0,4 s** y después el peso subió por encima de `valor / 0,7`, se descarta y se
+guarda `0,92 ×` el máximo (`OK … e … x0.92`). Si el estable duró más, la subida es una **presión
+de la mano** y el estable se conserva.
 
-**Chequeo de plausibilidad (`WEIGH_PLAUS_FRAC`).** Encontrado en campo (2026-09-30): la
-gaveta se detiene un instante en un valor que **no es el final** (todavía se está posando),
-pasa la ventana de 0,15 lb/250 ms y se retira antes de asentar en el peso real; como el primer
-valor asentado es la referencia y solo puede subir durante `WEIGH_PLACE_MS`, se guardaba ese
-valor (caso real: `5.3` lb en vez de un peso normal). Ahora el valor asentado sigue mandando
-siempre, salvo que **después de la última vez que se dio por asentado** el peso suba por
-encima de `valor / 0,7`: entonces se descarta y la gaveta queda como `PERDIDO ... cap=N` (con
-`N` > 0 = asentó, pero se descartó) en vez de guardarse mal. Un golpe al poner no lo activa:
-su pico es *anterior* al valor asentado. Coste conocido: si justo antes de retirarla la
-presionan con más de ~43 % de fuerza extra, se pierde. Simulado con la cola de retiro real
-(~0,9 s): gavetas normales y golpes de hasta +110 % sin cambio; el caso del `5.3` y la pausa a
-mitad de colocación dejan de guardarse mal (0 de 600). Se probó antes un chequeo basado en el
-*tiempo* hasta el retiro y se **descartó**: la cola de retiro (última lectura asentada →
-plataforma vacía) dura ~0,6–1,5 s en gavetas normales, así que perdía ~60 % de las buenas.
+**Valor estimado.** Si la gaveta se quita antes de que la lectura llegue a asentarse, se guarda
+el valor donde la lectura estuvo **quieta más tiempo** (casillas de 0,5 lb; solo cuentan las
+lecturas que cambian ≤ 0,15 lb respecto a la anterior, así que la subida, la bajada al retirar
+y el pico de una presión no cuentan). Aparece en `/log` como `OK 23.4 e carga=… max=… sost`;
+en el historial y en la web no se distingue de un pesaje estable. Simulado: retiros rápidos
+con error típico −3 % (con el anterior 0,92 × máximo era −9 %), y con una presión fuerte al
+final 3-12 de 400 quedan mal (antes 400 de 400). Riesgo restante: un estable de menos de 0,4 s
+seguido de una presión fuerte puede guardarse alto (no se distingue de la pausa).
 
-**Rescate (`WEIGH_RESCUE_FRAC`).** El log real mostró gavetas que se retiran antes de que
-la lectura llegue a asentarse (puestas solo ~1,5–1,8 s) y que se perdían. Si una gaveta se
-retira **de verdad** y no deja ningún valor asentado válido (nunca asentó, o se descartó por
-el chequeo de plausibilidad), ahora se guarda `0,92 ×` el **máximo visto** en vez de perderla.
-Solo si: estuvo puesta ≥ `WEIGH_RESCUE_MIN_MS` (600 ms), su máximo es ≥ `WEIGH_RESCUE_MIN_LB`
-(15 lb; descarta roces de la mano) y el peso **bajó por intermedios** tras el máximo (una
-tara es un escalón limpio: el último valor cargado sigue siendo el máximo, y no se rescata).
-El valor asentado sigue mandando siempre; el rescate nunca se aplica si lo hay. Es una
-**estimación**: aparece en `/log` como `OK 41.3 e carga=… max=… x0.92`, pero en el historial
-y en la web no se distingue de un pesaje asentado. Simulado (retiro antes de asentar): error
-mediano −9 % (con F=1,0 sería −1 %, pero +13 % si manipulan la gaveta ±6 lb); roces de mano
-colados: 0,1 % con mínimo 15 lb.
-
-Si un pesaje real se sigue perdiendo, mira el Monitor Serie: la línea
-`cero limpio (dip X.XX) sin descarga` dice cuánto rebotó — baja `WEIGH_DIP`
-hacia ese valor. Si alguna **tara** se cuela, súbelo. Para volver del todo al
-comportamiento anterior: `WEIGH_V2 0`.
+**Historia.** Hasta 2026-10-07 el firmware intentaba distinguir un retiro de una TARA (rebote
+negativo de la celda, bajada por valores intermedios, negativo sostenido, ventanas de
+confirmación). En la prueba real sin tara esa lógica guardó 3 pesajes **sin valor** ("--") y
+descartó como tara uno real. Como en campo nunca se tara con una gaveta llena, se reemplazó por
+la regla simple de arriba (respaldo en `_backup_pre_simple/`).
 
 ### Mallas y BIN
 
@@ -444,6 +540,38 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
 | `diaglog.h/.cpp` | registro de diagnóstico en RAM (`/log`) |
 | `sniffer_tm1640.h/.cpp` | ISR del bus DA/SL + TM1640 (solo si `ENABLE_SNIFFER`) |
 | `web_ui.h/.cpp` | servidor web y páginas |
+| `icon_png.h` | icono del panel (PNG 192×192) para el acceso directo "Balanza" |
+| `fan.h/.cpp` | ventilación de la caja por histéresis (`FAN_ENABLE`) |
+| `weighsim.h/.cpp` | simulador de pesajes para pruebas (solo con `WEIGH_SIM 1`) |
+| `../herramientas/prueba_carga.py` | prueba de carga del panel web desde una PC |
+
+### Pruebas en oficina (sin pescar)
+
+- **Simulador de pesajes (`WEIGH_SIM 1` en `config.h`).** El ESP deja de leer la balanza y
+  genera gavetas falsas cada pocos segundos (`WEIGH_SIM_GAP_MS`): normales, retiros rápidos,
+  golpes, pausas a mitad de colocación, livianas (< 12 lb) y "mover la balanza" sin gaveta;
+  estas dos últimas **no** deben guardarse. `WEIGH_SIM_TARE 9` = tara activa como en campo
+  (la plataforma vacía marca −9); `0` = sin tara, con ruido alrededor de cero. Pasan por el
+  pesaje **real** (tarea, guardado en NVS, archivo LittleFS). Cada gaveta queda en `/log` como
+  `SIM #n W=<peso real> <tipo>` y el panel avisa "MODO SIMULADOR". **Los pesajes simulados se
+  guardan en el historial**: exporta antes los reales y usa "Borrar todo" al terminar. Nunca
+  llevar a campo con `WEIGH_SIM 1`.
+- **Prueba de carga (`herramientas/prueba_carga.py`).** Con la PC conectada a la red del ESP,
+  imita varios celulares con el panel abierto (piden `/api` cada segundo con el mismo límite y
+  reintento que la página), uno con el historial abierto, "celulares lentos" que dejan una
+  conexión colgada y descargas periódicas del CSV y de `/log`. Junta el `/log` aunque rote,
+  detecta reinicios del ESP y al terminar escribe un informe (y, con el simulador activo,
+  compara cada gaveta simulada con lo guardado). Mientras corre, escribir un número y Enter (p. ej. `45`)
+  anota la temperatura del **aire**: el informe resume cada escalón (temperatura del chip,
+  memoria, reinicios, WiFi, fallos de la web) para las pruebas de calor. Solo usa la biblioteca estándar de Python:
+
+  ```
+  python prueba_carga.py --paneles 3 --lentos 1 --minutos 30
+  ```
+
+  Los resultados quedan en `~/balanza_pruebas/prueba_<fecha>/` (`informe.txt`, `log_esp.txt`,
+  `peticiones.csv`). Una PC es **una** sola conexión WiFi: para probar varias asociaciones
+  reales conviene sumar 2–3 celulares con el panel abierto.
 
 ## 7. Notas y problemas conocidos
 
@@ -463,32 +591,36 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
   `+123s` = segundos desde el arranque). `DIAG_LOG 0` en `config.h` lo desactiva. Qué anota:
   - `ARRANQUE motivo=…`: por qué se reinició (`CAIDA-DE-TENSION` = brownout de la
     alimentación; `PANIC`/`WDT` = fallo del programa; `ENCENDIDO` = conexión normal).
-  - `OK 41.3 r carga=1780 1a=520 n=31 rech=0`: pesaje guardado (peso; `r` retiro / `c`
-    cambio de gaveta / `d` display cerrado; ms que estuvo puesta; ms hasta el 1er valor
-    asentado; nº de lecturas asentadas; cuántas cayeron fuera de banda). Si la etiqueta es
-    **`e`** (`OK 41.3 e carga=… max=… x0.92`) el valor es una **estimación** por rescate
-    (`WEIGH_RESCUE_FRAC` × máximo visto), no una lectura asentada.
-  - `PERDIDO(neg|cambio|cero|display) carga=… max=… min=… n=… r=… cap=…`: una gaveta
-    estuvo puesta y **no se guardó**. Con `carga` (ms puesta) y `max`/`min` se ve si fue
-    por poco tiempo o por un peso que no paraba de moverse → sirve para afinar
-    `WEIGH_WIN_MS` / `WEIGH_BAND`. `cap=0`: nunca llegó a asentar; `cap>0`: asentó pero el
-    valor se descartó por inverosímil (ver `WEIGH_PLAUS_FRAC` en la sección 3).
-  - `TARA …` / `DESCARTE …`: tara o cambio descartado a propósito (no es una pérdida).
+  - `OK 41.3 r carga=1780 1a=520 n=31 rech=0`: pesaje guardado con su **valor estable**
+    (peso; ms que estuvo puesta; ms hasta el 1er valor asentado; nº de lecturas asentadas;
+    cuántas cayeron fuera de banda). Si la etiqueta es **`e`** (`OK 41.3 e carga=… max=…
+    x0.92`) el valor es una **estimación** (`sost` = valor donde estuvo quieta más tiempo; `x0.92` = 0,92 × máximo).
+  - `PERDIDO(corta|liviano|display) carga=… max=… n=… r=… cap=…`: algo de ≥ 12 lb
+    estuvo en la plataforma y **no se guardó**: `corta` = menos de 600 ms (un golpe de la
+    mano); `liviano` = no asentó y el estimado quedaba por debajo de 12 lb; `display` = el
+    display se apagó sin pasar por cero. `cap=0`: nunca llegó a asentar; `cap>0`: asentó.
   - `WIFI + cliente AB:CD` / `WIFI - cliente AB:CD motivo=N`: un móvil entra o sale de la
     red (`8` se fue él · `3` deauth · `4` inactividad · `2` autenticación expirada · `15`
     fallo de handshake). Si un móvil sale y vuelve a entrar en el mismo instante, lo más
     probable es que lo haya provocado su sistema (Android a veces suelta una WiFi "sin
     internet"), no el ESP.
-  - `ST cli=1 rssi[-63 ] heap=… fps=…` cada ~2 min: nº de móviles, **señal** de cada uno
-    (dBm; peor que ~-80 es mala), memoria libre / mínima y refrescos por segundo del display.
+  - `VENT ON t=61` / `VENT OFF t=52`: los ventiladores de la caja se encendieron o apagaron
+    (temperatura media del chip en ese momento; `sensor sin dato` = encendidos a prueba de fallos).
+  - `WIFI AP reinicio #N <motivo> heap=…`: el firmware tuvo que **volver a levantar su red**
+    (el driver la paró o quedó en un modo inesperado). Desconecta a todos los móviles a la
+    vez; `heap` es la memoria libre en ese momento.
+  - `ST c=1 t=48 r[-63 ] h=…/… f=…` cada ~2 min: nº de móviles (`c`), **temperatura del
+    chip** en °C (`t`, sensor interno, aprox. ±2–3 °C), **señal** de cada móvil (`r`, dBm;
+    peor que ~-80 es mala), memoria libre / mínima (`h`) y refrescos por segundo del
+    display (`f`). La cabecera de `/log` muestra además la temperatura máxima vista.
   - `BUCLE lento 143 ms (web 138 ms)`: una vuelta de `loop()` (el servidor web, el portal
     cautivo) tardó ≥ 80 ms y cuánto de eso fue el servidor web. El sniffer y el pesaje
     corren en su propia tarea (ver sección 5): una espera aquí ya **no** les afecta, pero
     si aparece muy seguido (un celular con mala señal puede hacer que `handleClient()`
     tarde hasta 5 s de un tirón, `HTTP_MAX_DATA_WAIT` de la librería WebServer) vale la
     pena saberlo.
-  - Cabecera con contadores (pesajes guardados / perdidos / taras, conexiones, vueltas
-    lentas, la más lenta).
+  - Cabecera con contadores (pesajes guardados / perdidos, conexiones, vueltas lentas, la
+    más lenta, temperatura máxima del chip).
 - **Alimentación y "SIN SEÑAL" en campo**: si el panel se queda congelado o se cae la red,
   comprueba primero el condensador de salida (~470 µF + 100 nF junto al pin `3V3`, ver
   sección 2) y el `motivo=` del último `ARRANQUE` en `/log`: si dice `CAIDA-DE-TENSION`, es

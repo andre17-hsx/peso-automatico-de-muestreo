@@ -60,10 +60,12 @@ void        weighBegin();              // carga el historial de NVS (llamar en s
 // config.h).  Solo la llama weighTaskFn (su propia tarea, ver el .ino).
 //   peso    : dispara la maquina de estados
 //   precio, total : se guardan junto al peso estable
-//   stable  : "estable" calculado por el sniffer (ver SNIF_STABLE_N); con
-//             WEIGH_PLATEAU 0 hace de respaldo si no hay captura por ventana
+//   stable  : "estable" calculado por el sniffer (ver SNIF_STABLE_N); no se usa,
+//             el pesaje decide con su propia ventana tolerante
 //   valid   : false si el display esta ilegible / apagado / dormido
-void        weighFeed(float peso, float precio, float total, bool stable, bool valid);
+//   fresh   : true si es un refresco NUEVO del display (no la misma lectura repetida)
+void        weighFeed(float peso, float precio, float total, bool stable, bool valid,
+                      bool fresh = true);
 
 const char* weighStateName();          // "vacia" / "estabilizando" / "estable"
 float       weighLatched();            // PESO del ultimo pesaje NO borrado (NAN si ninguno)
