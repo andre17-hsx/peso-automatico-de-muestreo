@@ -13,16 +13,16 @@
 #define FAN1_PIN 5
 #endif
 #ifndef FAN2_PIN
-#define FAN2_PIN 6                 // -1 = solo un pin (p. ej. los dos MOSFET en el mismo GPIO)
+#define FAN2_PIN 6                 // -1 = solo un pin (p. ej. los dos transistores en el mismo GPIO)
 #endif
 #ifndef FAN_ACTIVE_HIGH
-#define FAN_ACTIVE_HIGH 1          // 1 = el pin en ALTO enciende (MOSFET de canal N en el lado de tierra)
+#define FAN_ACTIVE_HIGH 1          // 1 = el pin en ALTO enciende (NPN o MOSFET canal N en el lado de tierra)
 #endif
 #ifndef FAN_ON_C
-#define FAN_ON_C 60.0f
+#define FAN_ON_C 68.0f
 #endif
 #ifndef FAN_OFF_C
-#define FAN_OFF_C 52.0f
+#define FAN_OFF_C 60.0f
 #endif
 #ifndef FAN_CHECK_MS
 #define FAN_CHECK_MS 5000
@@ -54,7 +54,7 @@ static_assert(FAN1_PIN >= 0, "FAN1_PIN tiene que ser un GPIO valido");
 
 // En el nucleo 3.x digitalWrite no actua antes de pinMode: se configura el pin y se
 // apaga enseguida.  Lo que garantiza "apagado" durante el arranque (antes de setup) es
-// el pulldown de 100 k en la puerta de cada MOSFET.
+// la resistencia de 10 k de base a GND de cada transistor.
 void fanBegin() {
   pinMode(FAN1_PIN, OUTPUT);
   if (FAN2_PIN >= 0) pinMode(FAN2_PIN, OUTPUT);

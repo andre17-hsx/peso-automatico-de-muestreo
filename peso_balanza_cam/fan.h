@@ -7,7 +7,7 @@
 //  Dos ventiladores que trabajan JUNTOS (uno mete aire, el otro lo saca): se
 //  encienden y apagan a la vez segun la temperatura interna del chip, con
 //  histeresis (FAN_ON_C / FAN_OFF_C) para no prender y apagar sin parar.
-//  Cada ventilador va con su MOSFET (el GPIO no da la corriente del motor).
+//  Cada ventilador va con su transistor (2N2222) (el GPIO no da la corriente del motor).
 //  Se llama desde loop(): nunca toca la tarea del pesaje.
 // ===========================================================================
 void     fanBegin();                 // pines como salida, ventiladores APAGADOS

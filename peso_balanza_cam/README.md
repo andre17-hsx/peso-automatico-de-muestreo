@@ -146,53 +146,47 @@ oficina, 69–70 °C al aire libre (2026-10-07).
 
 #### Conexión
 
-Vista general: los ventiladores tienen su **propia rama** desde la batería, antes del
-TPS63020, y su retorno va directo al borne − (masa en estrella).
+Esquema completo de la caja (alimentación, Super Mini con sus pines en posición real, los
+dos canales de ventilador y el sniffer):
 
-```
- BATERÍA Li-ion
-  (+) ──[F1 1 A lento]──[SW]──●──────────────────────────► TPS63020 VIN ──► pin 3V3 Super Mini
-                              │
-                              │  +V VENT (cable propio, 22–24 AWG)
-                              ●──[F2 PTC 0,5 A]──●──┬── C4 220 µF/16 V (+)
-                                (opcional)        │  ├── C7 100 nF
-                                                  │  │
-                                                  ├──┼── canal 1  (GPIO5 → Q1 → FAN1)
-                                                  └──┼── canal 2  (GPIO6 → Q2 → FAN2)
-                                                     │
-  (−) ═══════════════ MASA EN ESTRELLA (borne − de la batería) ══════════╧═══ GND TPS63020
-                                                                            ═══ GND Super Mini
-                                                                            ═══ GND balanza (sniffer)
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../docs/esquema-caja-oscuro.svg">
+    <img src="../docs/esquema-caja-claro.svg" width="900" alt="Esquema de la caja: batería Li-ion con fusible F1 e interruptor; rama al TPS63020 que da 3,3 V al pin 3V3 de la ESP32-S3 Super Mini; rama propia con PTC F2 hacia los dos ventiladores, cada uno conmutado por un 2N2222 desde GPIO5 y GPIO6 con 470 ohm en la base y 10 kilohm a masa; y el sniffer del display en GPIO1 y GPIO4.">
+  </picture>
+</p>
 
-Un canal en detalle. Se monta dos veces: canal 1 = GPIO5, Q1, D1, C5, R1, R2; canal 2 =
-GPIO6, Q2, D2, C6, R3, R4.
+Los ventiladores tienen su **propia rama** desde la batería, antes del TPS63020, y su
+retorno (`GND_P`) va en cable propio directo al borne − (masa en estrella). Cada canal se
+monta dos veces: canal 1 = GPIO5, Q1, D1, C5, R1, R2; canal 2 = GPIO6, Q2, D2, C6, R3, R4.
 
 ```
  +V VENT ────────●──────────────────●──────────────────●
-                 │                  │                  │
-                 │ cátodo (banda)   │                  │
+                 │ cátodo (banda)   │ rojo             │
             D1  ─┴─               FAN1 (+)            ─┴─
           1N5819 ▲                ( M )               ─┬─  C5  100 nF cerámico
                  │ ánodo          FAN1 (−)             │       (en los bornes del ventilador)
-                 │                  │                  │
+                 │                  │ negro            │
                  ●──────────────────●──────────────────●
                                     │
-                                    │ D  (pata 3)
-                                 ┌──┴──┐
- GPIO5 ──[R1 100 Ω]──●───────────┤G    │  Q1  AO3400A
-                     │  (pata 1) └──┬──┘
-                     │              │ S  (pata 2)
-                 [R2 100 kΩ]        │
+                                    │ C (colector)
+ GPIO5 ──[R1 470 Ω]──●──────── B ──┤  Q1  2N2222 (NPN)
+                     │              │ E (emisor)
+                 [R2 10 kΩ]         │
                      │              │
- BAT− (estrella) ════●══════════════●═══════  (cable directo al borne −, no por el pin GND del ESP)
+ GND ════════════════●     BAT− ════●═══════  (GND_P: cable directo al borne −)
 ```
 
-Polaridades (donde suelen estar los errores):
+Polaridades y patas (donde suelen estar los errores):
 - **D1/D2**: la banda (cátodo) va a +V VENT. Al revés, cortocircuita la rama.
 - **C4**: la pata larga (+) va a +V VENT y la franja (−) a BAT−.
-- **AO3400A** (SOT-23, visto desde arriba): pata 1 = G, pata 2 = S, pata 3 = D (la que
-  queda sola).
+- **2N2222 en TO-92**: casi todos son **E-B-C** (cara plana al frente, patas abajo), pero
+  algunos (P2N2222A) son **C-B-E**. Compruébalo con el multímetro en modo diodo: la base
+  es la pata que marca ~0,6–0,7 V hacia las otras dos (punta roja en la base); base-emisor
+  marca unos milivoltios más que base-colector.
+- **Ventiladores de 4 cables**: rojo (+) a +V VENT y negro (−) al colector. El amarillo
+  (tacómetro) y el azul (PWM) **no se usan**: córtalos cortos y aísla cada uno con
+  termorretráctil. Sin señal en el azul, el ventilador gira a velocidad máxima.
 - En la Super Mini, `GPIO5` y `GPIO6` están en la tira izquierda (pines "5" y "6", entre
   el 4 y el 7). `GND` está en la tira derecha, segundo desde arriba.
 
@@ -200,29 +194,34 @@ Polaridades (donde suelen estar los errores):
 
 | Ref. | Valor | Tipo | Cant. | Función |
 |---|---|---|---|---|
-| R1, R3 | 100 Ω ¼ W 5 % | película | 2 | Limita el pico de carga de la puerta (33 mA < 40 mA del GPIO) y evita oscilaciones |
-| R2, R4 | 100 kΩ ¼ W 5 % | película | 2 | MOSFET apagado al arrancar y al flashear |
-| Q1, Q2 | AO3400A (30 V, 5,7 A, < 48 mΩ a 2,5 V) | SOT-23 | 2 | Conduce del todo con 3,3 V en la puerta |
+| R1, R3 | 470 Ω ¼ W 5 % | película | 2 | Base: ~5 mA, satura el transistor sin cargar el GPIO |
+| R2, R4 | 10 kΩ ¼ W 5 % | película | 2 | Transistor apagado al arrancar y al flashear |
+| Q1, Q2 | 2N2222 / PN2222A (NPN, 40 V, 0,6 A) | TO-92 | 2 | Interruptor del ventilador por el negativo |
 | D1, D2 | 1N5819 (1 A, 40 V Schottky) | DO-41 (SMD: SS14) | 2 | Absorbe el pico al apagar el motor |
 | C5, C6 | 100 nF 50 V X7R ("104") | cerámico | 2 | Ruido de la electrónica del ventilador |
-| C4 | 220 µF 16 V, 105 °C | electrolítico radial | 1 | Reserva local para el arranque de los motores |
+| C4 | 470 µF 16 V, 105 °C | electrolítico radial | 1 | Reserva local para el arranque de los motores |
 | C7 | 100 nF 50 V X7R | cerámico | 1 | Desacople en alta frecuencia, junto a C4 |
 | F1 | fusible 1 A lento (5×20) o PTC 1,1 A (MF-R110) | portafusible | 1 | Protege toda la instalación |
-| F2 (opcional) | PTC 0,5 A (MF-R050) | radial | 1 | Un ventilador en corto corta solo su rama |
+| F2 | PTC 0,75 A (MF-R075) | radial | 1 | Un ventilador en corto corta solo su rama |
+| FAN1, FAN2 | 5 V, 0,16 A, 30×30 mm, 4 cables | — | 2 | Uno mete aire en la caja y otro lo saca |
 
-En formato de patas largas (TO-220), el MOSFET puede ser un **IRLB8721** (patas G-D-S de
-izquierda a derecha, visto de frente). **No uses IRF520** ni los módulos que lo traen:
-necesitan ~10 V en la puerta y con 3,3 V apenas conducen.
+Cálculo de la base: (3,3 V − ~0,9 V) / 470 Ω ≈ 4,8 mA para ~0,13–0,16 A de ventilador
+(β forzada ≈ 27–33). La corriente de base sale del GPIO, alimentado por los 3,3 V fijos del
+TPS63020, mientras que la del ventilador baja con la batería: el caso más exigente es con
+la celda llena. Para comprobarlo, con los ventiladores girando la tensión colector-emisor
+debe quedar por debajo de ~0,4 V; si no, baja R1/R3 a 220–330 Ω (o pon otra de 470 Ω en
+paralelo). Con un MOSFET de nivel lógico (AO3400A, Si2302) en su lugar: 100 Ω en la puerta
+y 100 kΩ a masa. **No uses IRF520/IRFZ44N** (sin la "L"): con 3,3 V apenas conducen.
 
 #### Montaje
 
 - **Nunca** el ventilador directo al GPIO (da ~40 mA; un ventilador pide 60–200 mA).
 - **+V VENT sale de la batería**, no del TPS63020 ni del pin `3V3`: el arranque del motor
   podría hundir los 3,3 V y reiniciar el ESP.
-- **El retorno va en su propio cable**: las fuentes de Q1/Q2 y R2/R4 van directo al borne
-  − de la batería, para que la corriente de los motores no pase por la masa del ESP ni del
+- **El retorno va en su propio cable**: los emisores de Q1/Q2 van directo al borne − de la
+  batería (`GND_P`), para que la corriente de los motores no pase por la masa del ESP ni del
   sniffer.
-- **D1/D2 junto a los MOSFET** (protegen el drenador). **C5/C6 en los bornes de cada
+- **Q1/Q2, R1–R4 y D1/D2 cerca de la ESP**. **C5/C6 en los bornes de cada
   ventilador. C4/C7 al final de +V VENT**, junto a los ventiladores.
 - **Cables de los ventiladores en par trenzado**, lejos de `DA`/`SL`: `GPIO5` está pegado
   a `GPIO4` (DA) en la tira de pines.
@@ -230,7 +229,7 @@ necesitan ~10 V en la puerta y con 3,3 V apenas conducen.
   **arrancan solos desde parados con 3,5 V**; si no, usa ventiladores de 3,3–3,7 V o un
   elevador a 5 V solo para esta rama. Uno de 12 V no arranca.
 - El estado sale en `/api` (`"fan":true`, `"tchip"`), en el latido del Monitor Serie
-  (`vent:1 t:61`), en `/log` como `VENT ON t=61` / `VENT OFF t=52` y en la cabecera de `/log`
+  (`vent:1 t:61`), en `/log` como `VENT ON t=61` / `VENT OFF t=60` y en la cabecera de `/log`
   (minutos encendidos). `FAN_ENABLE 0` lo desactiva.
 
 ---
@@ -604,7 +603,7 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
     fallo de handshake). Si un móvil sale y vuelve a entrar en el mismo instante, lo más
     probable es que lo haya provocado su sistema (Android a veces suelta una WiFi "sin
     internet"), no el ESP.
-  - `VENT ON t=61` / `VENT OFF t=52`: los ventiladores de la caja se encendieron o apagaron
+  - `VENT ON t=61` / `VENT OFF t=60`: los ventiladores de la caja se encendieron o apagaron
     (temperatura media del chip en ese momento; `sensor sin dato` = encendidos a prueba de fallos).
   - `WIFI AP reinicio #N <motivo> heap=…`: el firmware tuvo que **volver a levantar su red**
     (el driver la paró o quedó en un modo inesperado). Desconecta a todos los móviles a la

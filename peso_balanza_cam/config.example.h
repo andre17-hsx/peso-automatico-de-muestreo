@@ -182,14 +182,14 @@
 //  temperatura interna del chip (media de ~30 s), con histeresis: ON al llegar a
 //  FAN_ON_C, OFF al bajar a FAN_OFF_C (y al menos FAN_MIN_ON_MS encendidos).
 //  Si el sensor no da dato, se encienden (a prueba de fallos).
-//  HARDWARE: cada ventilador con su MOSFET de nivel logico (p. ej. AO3400) en el lado
-//  de tierra, 100 ohm a la puerta, 100 k de puerta a GND, diodo (1N5819) en paralelo
+//  HARDWARE: cada ventilador con su transistor NPN (2N2222) en el lado de tierra,
+//  470 ohm a la base, 10 k de base a GND, diodo (1N5819) en paralelo
 //  con el ventilador, y los ventiladores alimentados desde la BATERIA (no del pin 3V3:
 //  el arranque del motor podria reiniciar el ESP).  NUNCA el ventilador directo al GPIO.
 #define FAN_ENABLE         1
-#define FAN1_PIN           5        // MOSFET del ventilador que mete aire
-#define FAN2_PIN           6        // MOSFET del que lo saca (-1 si los dos van al mismo pin)
-#define FAN_ACTIVE_HIGH    1        // 1 = pin en ALTO enciende (MOSFET canal N)
+#define FAN1_PIN           5        // base del transistor del ventilador que mete aire
+#define FAN2_PIN           6        // base del que lo saca (-1 si los dos van al mismo pin)
+#define FAN_ACTIVE_HIGH    1        // 1 = pin en ALTO enciende (NPN o MOSFET canal N)
 #define FAN_ON_C           68.0f    // enciende con la media >= esto (temperatura del CHIP, no del aire)
 #define FAN_OFF_C          60.0f    // apaga con la media <= esto
 #define FAN_CHECK_MS       5000     // cada cuanto se mide
