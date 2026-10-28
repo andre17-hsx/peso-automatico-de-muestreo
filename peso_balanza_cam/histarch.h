@@ -25,6 +25,16 @@ struct __attribute__((packed)) HRec {
 };                    // 24 bytes
 
 bool     histBegin();                      // monta LittleFS y carga los borrados; false = sin archivo
+bool     histMountFailed();                // la particion tiene datos pero NO monta (no se formateo: aviso)
+
+// Candado del archivo: la tarea del pesaje (que archiva) y la web (borrar, CSV)
+// no deben tocarlo a la vez.  Quien llama a las funciones de abajo desde dos
+// tareas distintas toma el candado alrededor.  waitMs = 0 -> no espera (para la
+// tarea del pesaje, que nunca debe quedarse bloqueada: si esta ocupado, lo deja
+// para el proximo lote).  HIST_WAIT_FOREVER = espera lo que haga falta.
+#define HIST_WAIT_FOREVER 0xFFFFFFFFu
+bool     histLock(uint32_t waitMs);
+void     histUnlock();
 bool     histReady();                      // montado y legible
 bool     histWritable();                   // se pueden seguir añadiendo registros
 bool     histFull();                       // se alcanzo la capacidad reservada

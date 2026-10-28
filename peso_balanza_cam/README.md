@@ -44,8 +44,10 @@ para probar el panel web sin la balanza conectada. No hay otro método de lectur
   | `Huge APP (3MB No OTA/1MB SPIFFS)` | 896 KB | ~28 000 |
   | `No OTA (2MB APP/2MB SPIFFS)` *(recomendado)* | 1,9 MB | ~61 000 |
 
-  La primera vez que arranca con una partición nueva la formatea (unos segundos, más
-  cuanto más grande sea) antes de levantar el WiFi.
+  La primera vez que arranca con una partición nueva (vacía) la formatea (unos segundos,
+  más cuanto más grande sea) antes de levantar el WiFi. Una partición **con datos** que no
+  monta no se formatea nunca: el panel avisa "sin memoria permanente", `/log` lo anota y se
+  sigue solo con el buffer de los últimos pesajes.
 - USB CDC On Boot: **`Enabled`** — esta placa NO tiene CH340, es un solo
   USB-C nativo; con `Disabled` no sale nada por el Monitor Serie
 - Monitor Serie **115200** → sale la IP / la red creada.
@@ -268,8 +270,15 @@ y 100 kΩ a masa. **No uses IRF520/IRFZ44N** (sin la "L"): con 3,3 V apenas cond
 - **600 ms mínimos**: un golpe o apoyo corto de la mano sobre la plataforma no es una gaveta.
   Una mano apoyada con ≥ 12 lb durante más de 0,6 s sí se guardaría (no se distingue de una
   gaveta muy rápida).
-- Display ilegible/apagado ≥ `WEIGH_INVALID_MS` con una gaveta puesta: no pasó por cero → no se
-  guarda; queda `PERDIDO(display)`.
+- Desde la versión con el estado de NVS agrupado (`"st"`), el primer arranque convierte lo
+  guardado al formato nuevo y borra las claves anteriores: **no vuelvas a cargar un firmware
+  anterior**, porque arrancaría con el buffer y los acumulados vacíos (el archivo LittleFS
+  sí se conserva).
+- Display ilegible, por encima de 80 lb o **congelado** (sin refrescos nuevos durante
+  `WEIGH_FRAME_TIMEOUT_MS`) durante `WEIGH_INVALID_MS` con una gaveta puesta: se cierra y se
+  guarda el **último valor estable** visto (si no lo hubo, el estimado, como siempre). `/log`
+  anota `DISPLAY sin datos …`. Después no se acepta otra gaveta hasta ver el peso en cero
+  (la misma gaveta podría seguir encima cuando vuelva el display).
 - El punto verde del panel lo calcula el sniffer (el PESO lleva `SNIF_STABLE_N` = 4 refrescos
   seguidos igual; no viene en el bus): es solo visual y no decide qué valor se guarda.
 - **PRECIO y TOTAL** se toman con el valor estable (o el último precio visto, para el estimado).
@@ -281,11 +290,12 @@ firmware no convierte nada, así que la balanza debe estar en **libras**):
 
 | Parámetro | Qué es | Por defecto |
 |---|---|---|
-| `WEIGH_ZERO_THRESH` | por debajo (o igual) durante 3 lecturas seguidas (60 ms, `WEIGH_ZERO_N`) = la gaveta pasó por cero → se cierra; una lectura suelta de 0 no cierra | `0.06` |
+| `WEIGH_ZERO_THRESH` | por debajo (o igual) durante 3 **refrescos nuevos** seguidos del display (~165 ms, `WEIGH_ZERO_N`) = la gaveta pasó por cero → se cierra; un refresco suelto de 0 no cierra | `0.06` |
 | `WEIGH_MIN_LOAD` | una gaveta empieza al llegar a este peso; menos = tara / nada | `12` |
 | `WEIGH_MAX_LOAD` | lecturas por encima se ignoran (como display ilegible): prueba de display, presión fuerte | `80` |
 | `WEIGH_MIN_MS` | tiempo mínimo puesta para guardarse (un golpe de la mano no es gaveta) | `600` |
-| `WEIGH_INVALID_MS` | display apagado este tiempo con gaveta puesta → se cierra sin guardar | `2500` |
+| `WEIGH_INVALID_MS` | display ilegible o congelado este tiempo con gaveta puesta → se cierra y se guarda el último estable (o el estimado) | `2500` |
+| `WEIGH_FRAME_TIMEOUT_MS` | sin un refresco nuevo del display en este tiempo = display congelado | `1000` |
 | `WEIGH_LOG_SIZE` | pesajes recientes que guarda en el buffer de memoria/NVS | `120` |
 | `WEIGH_ARCHIVE` | `1` = además del buffer, guarda **todos** los pesajes en un archivo en flash hasta *Borrar todo*; `0` = solo el buffer | `1` |
 | `WEIGH_FEED_MS` | cada cuánto se alimenta la máquina de estados | `20` |
@@ -381,7 +391,7 @@ enlaces a `/config` y `/sniffer`), que sigue disponible entrando a esas rutas di
   subtotal. Cada fila se **borra deslizándola** hacia la izquierda (`GET /weighings/del?id=N`);
   el `#` se renumera sin huecos.
 - Botón **Borrar todo** → tira de confirmación (Cancelar / Sí, borrar). También
-  `GET/POST /weighings/clear`.
+  `POST /weighings/clear` (solo POST: un enlace o la precarga del navegador no borran nada).
 - **`/weighings.csv`**: descarga el historial ordenado del pesaje **1 al n** (del más
   antiguo al más reciente) con las columnas
   `n;peso;precio_unit;total;malla;bin;hora_local;sector;piscina`. En el panel,
@@ -427,13 +437,14 @@ enlaces a `/config` y `/sniffer`), que sigue disponible entrando a esas rutas di
 | `/api` | | JSON estado en vivo (incluye acumulados y objetivos de malla/BIN, sector, piscina y el estado del archivo permanente `hist`) |
 | `/weighings` · `/weighings.csv` | | historial: JSON de las últimas 30 filas con los subtotales de sus mallas/BIN (`grp`, `bins`) / CSV con **todo** el historial |
 | `/weighings/del?id=N` | | borra una fila |
-| `/weighings/clear` | | borra el historial (RAM + NVS); conserva objetivos, sector y piscina |
+| `/weighings/clear` | | (POST) borra el historial (RAM + NVS + archivo); conserva objetivos, sector y piscina |
 | `/targets?malla=200&bin=800` | | pone los objetivos en lb (`0` lo desactiva; si falta un parámetro, ese no cambia) |
 | `/info?sector=A&piscina=12` | | pone sector / piscina (vacío los borra; si falta un parámetro, ese no cambia) |
-| `/settime?epoch=…` | | el móvil le pasa la hora al ESP (sin internet) |
+| `/settime?epoch=…` | | el móvil le pasa la hora al ESP (sin internet). El panel la vuelve a mandar sola si `/api` dice `"clock":false` (la placa se reinició) |
 | `/log` · `/log?dl=1` | | registro de diagnóstico en texto (ver en pantalla / descargar). Enlace "Diagnóstico" al pie del panel |
-| `/config` | | calibración del mapa del sniffer (se guarda en NVS) |
-| `/sniffer` · `/sniffer/raw` | SNIFFER | 16 bytes de RAM / volcado de flancos |
+| `/log/clear` | | (POST) borra los informes de reinicios inesperados guardados en flash |
+| `/sniffer` · `/snif.json` · `/snif_reset` | SNIFFER | 16 bytes de RAM, reloj del bus / reinicia esas medidas |
+| `/config` · `/sniffer/raw` · `/snif_cap` · `/snif_solve` · `/snif_probe` · `/snif_mapreset` | `SNIFFER_DEBUG 1` | calibración del mapa y volcado de flancos. **No van en el firmware de campo** (`SNIFFER_DEBUG 0`): cambian el mapa o paran el bus mientras se pesa, y el volcado ocupa 32 KB de RAM |
 
 ---
 
@@ -504,8 +515,8 @@ El mapa `SNIF_*_ADDR` de `config.h` vale para la `ACS-JC36CV28`. Si un
 **"Resolver mapa"** salió mal, quedó guardado en NVS y pisa al de `config.h`.
 Arreglo:
 
-- **Botón "Restaurar mapa por defecto"** en `/sniffer` → borra el de NVS (solo el mapa
-  del sniffer; no toca el historial ni los objetivos).
+- **Botón "Restaurar mapa por defecto"** en `/sniffer` (con `SNIFFER_DEBUG 1`) → borra el de
+  NVS (solo el mapa del sniffer; no toca el historial ni los objetivos).
 - O sube `SNIF_MAP_VERSION` en `config.h` y reflashea → se borra solo.
 - La línea `mapa PESO[…] PRECIO[…] TOTAL[…]` de `/sniffer` muestra el que hay.
 
@@ -522,7 +533,8 @@ Arreglo:
 
 ### Resolver el mapa (automático) — solo si tu balanza no coincide
 
-En `/sniffer`, sección **"Resolver el mapa"**: pon un peso, mira qué marca,
+Compila con `SNIFFER_DEBUG 1` (las rutas de calibración no van en el firmware de campo) y
+vuelve a `0` al terminar. En `/sniffer`, sección **"Resolver el mapa"**: pon un peso, mira qué marca,
 escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa**.
 
 ---
@@ -584,7 +596,8 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
   bytes, 64 KB por defecto, últimas 1024 líneas — de una jornada real salieron ~4
   líneas/min, así que alcanza para ~4 h seguidas): no escribe en flash ni usa el Serie,
   anotar una línea cuesta microsegundos y solo se hace en **eventos**, nunca por muestra →
-  no ralentiza nada. **Se borra al apagar: descárgalo antes de desconectar la batería** (si
+  no ralentiza nada. **Se borra al apagar: descárgalo antes de desconectar la batería**, salvo
+  la "caja negra" (ver `REINICIOS INESPERADOS` más abajo) (si
   la jornada dura más de lo que cubre el buffer, descárgalo a mitad de camino). Abre el
   panel una vez tras encender para que el móvil ponga la hora (si no, las líneas llevan
   `+123s` = segundos desde el arranque). `DIAG_LOG 0` en `config.h` lo desactiva. Qué anota:
@@ -618,8 +631,31 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
     si aparece muy seguido (un celular con mala señal puede hacer que `handleClient()`
     tarde hasta 5 s de un tirón, `HTTP_MAX_DATA_WAIT` de la librería WebServer) vale la
     pena saberlo.
+  - `MEM ma=… pila w=… l=… nvs=u/t` cada ~2 min (junto a `ST`): bloque de memoria libre más
+    grande (fragmentación), pila libre mínima de la tarea del pesaje (`w`) y de `loop()`
+    (`l`) en bytes, y entradas de NVS usadas / totales.
+  - `PESAJE detenido hace N ms` / `PESAJE reanudado`: la tarea del pesaje dejó de dar
+    vueltas más de 5 s (no debería pasar nunca).
+  - `DISPLAY sin datos N ms con gaveta: se cierra`: el display se quedó congelado o
+    ilegible con una gaveta encima; la línea `OK …` siguiente es lo que se guardó.
+  - `NVS ERROR al guardar …` / `ARCHIVO …`: fallos de la memoria permanente (como mucho uno
+    por minuto).
+  - `ESPERANDO CERO tras cierre por display`: tras cerrar una gaveta por display sin datos,
+    el peso no ha vuelto a cero en 10 s; hasta que vuelva no se acepta otra gaveta.
   - Cabecera con contadores (pesajes guardados / perdidos, conexiones, vueltas lentas, la
     más lenta, temperatura máxima del chip).
+  - **`REINICIOS INESPERADOS`** al final: tras un reinicio que no sea un encendido normal
+    (caída de tensión, fallo del programa, watchdog, botón RST), el arranque guarda en flash
+    (`/reinicios.txt`, máx. ~24 KB rotando) el motivo, cuánto duró la sesión anterior, la
+    hora de su última línea, las **últimas 96 líneas del log** antes del reinicio (copiadas
+    en memoria RTC, que sobrevive a fallos del programa pero no a quitar la alimentación) y,
+    si fue un fallo del programa, la tarea, la causa, el motivo que da el sistema (p. ej.
+    *Interrupt wdt timeout*) y las direcciones del fallo (se traducen a archivo:línea con el
+    `.elf` de ese mismo firmware; el informe dice si el fallo es de **otro** firmware, p. ej.
+    uno anterior). Cada informe lleva su **nº de arranque** (`arranque #N`, también en la
+    línea `ARRANQUE #N` de `/log`) y, en cuanto un móvil abre el panel y pone la hora, una
+    línea con la **fecha**. Se borran con **"borrar informes de reinicio"** al pie del panel
+    (`POST /log/clear`; no borra pesajes).
 - **Alimentación y "SIN SEÑAL" en campo**: si el panel se queda congelado o se cae la red,
   comprueba primero el condensador de salida (~470 µF + 100 nF junto al pin `3V3`, ver
   sección 2) y el `motivo=` del último `ARRANQUE` en `/log`: si dice `CAIDA-DE-TENSION`, es

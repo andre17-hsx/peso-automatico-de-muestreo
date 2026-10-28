@@ -15,7 +15,11 @@
 //      (pesaje guardado / perdido, celular que entra o sale, vuelta del bucle
 //      demasiado lenta, cada ~2 min un resumen), nunca por muestra;
 //    - se puede llamar desde cualquier tarea (eventos de WiFi incluidos).
-//  Se pierde al reiniciar/apagar: descargalo antes.  DIAG_LOG 0 lo desactiva.
+//  Se pierde al reiniciar/apagar, PERO las ultimas lineas se copian tambien a una
+//  "caja negra" en memoria RTC (sobrevive a cuelgues y watchdogs, no a quitar la
+//  alimentacion).  Tras un reinicio inesperado, diagBootReport() guarda en flash un
+//  informe (motivo + fallo del coredump + ultimas lineas) que /log muestra al final.
+//  DIAG_LOG 0 lo desactiva.
 // ===========================================================================
 
 struct DiagCounters {
@@ -33,6 +37,9 @@ struct DiagCounters {
 extern DiagCounters g_diagCnt;
 
 void diagBegin();                                         // anota el motivo del ultimo reinicio
+void diagBootReport();     // tras montar LittleFS (weighBegin): guarda el informe del reinicio anterior
+void diagClockSet();       // el movil puso la hora: se anota la fecha junto al informe de este arranque
+void diagClearReports();   // borra los informes de reinicios guardados en flash
 void diagLog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 // Vuelca el registro (cabecera con contadores + lineas, de la mas vieja a la mas

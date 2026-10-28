@@ -57,7 +57,11 @@ static uint32_t          g_fastThr = 480;      // ciclos = 2 us @ 240 MHz (se aj
 
 // volcado crudo de flancos
 struct RawE { uint32_t cyc; uint8_t lv; };
-#define RAW_MAX 4000
+#if SNIFFER_DEBUG
+#define RAW_MAX 4000          // 32 KB de RAM: solo con la calibracion activada
+#else
+#define RAW_MAX 1             // sin calibracion (/sniffer/raw no existe): 8 bytes
+#endif
 static volatile RawE  rawArr[RAW_MAX];
 static volatile int   rawN = 0;
 static volatile bool  rawArm = false;

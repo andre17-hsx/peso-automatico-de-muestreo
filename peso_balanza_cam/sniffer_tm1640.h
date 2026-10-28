@@ -1,4 +1,9 @@
 #pragma once
+#include "config.h"
+
+#ifndef SNIFFER_DEBUG
+#define SNIFFER_DEBUG 0     // 1 = rutas de calibracion del bus (solo para una balanza nueva)
+#endif
 #include <Arduino.h>
 
 // Mapa RAM(16 bytes) -> digitos.  Editable en caliente desde /config.

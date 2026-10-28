@@ -26,7 +26,11 @@
 #define WEIGH_MIN_MS        600     // una gaveta tiene que estar puesta al menos esto para guardarse
 #endif
 #ifndef WEIGH_ZERO_N
-#define WEIGH_ZERO_N        3       // lecturas seguidas en cero para cerrar (3 x 20 ms): un glitch suelto no cierra
+#define WEIGH_ZERO_N        3       // REFRESCOS NUEVOS del display seguidos en cero para cerrar (~3 x 55 ms):
+                                    // se cuentan refrescos y no vueltas de 20 ms, que repiten el mismo refresco
+#endif
+#ifndef WEIGH_FRAME_TIMEOUT_MS
+#define WEIGH_FRAME_TIMEOUT_MS 1000 // sin un refresco NUEVO del display en este tiempo = display congelado
 #endif
 #ifndef WEIGH_INVALID_MS
 #define WEIGH_INVALID_MS    2500
@@ -134,7 +138,10 @@ enum { PH_EMPTY, PH_LOAD };
 static int      g_phase    = PH_EMPTY;
 static float    g_sP  = NAN, g_sPr = NAN, g_sT = NAN;   // ultimo valor ESTABLE de la gaveta en curso
 static uint32_t g_badMs    = 0;       // inicio de la racha ilegible
-static uint8_t  g_zeroN    = 0;       // lecturas seguidas en cero con una gaveta puesta
+static uint8_t  g_zeroN    = 0;       // refrescos seguidos en cero con una gaveta puesta
+static uint32_t g_lastFreshMs = 0;    // ultimo refresco NUEVO del display (0 = aun ninguno)
+static bool     g_waitZero = false;   // tras cerrar por display sin datos: no aceptar otra gaveta
+                                      // hasta ver el peso en cero (la misma gaveta seguiria encima)
 
 // --- datos de la gaveta en curso, para el registro de diagnostico (/log) ---
 // weighClear() corre en la tarea del SERVIDOR WEB; la maquina de estados de
@@ -243,27 +250,55 @@ struct PMeta { uint32_t total; int32_t head; int32_t count; };
 // (antes eran 8 claves NVS sueltas -> 8 escrituras a flash por pesaje, cada
 // una con su propio "congelon" de los dos nucleos; ahora es 1 sola).
 struct PGroups { uint16_t mallaId, binId; float mallaSum, binSum, mallaTarget, binTarget, mallaLast, binLast; };
+// Contadores + suma + grupos en UN solo blob ("st"): antes eran 3 claves ("meta",
+// "wsum", "grp") = 3 escrituras a flash por pesaje; ahora 1 (+ la del slot).  Menos
+// desgaste de NVS (~5000 pesajes/dia) y menos pausas del bus durante la escritura.
+struct PState { uint32_t total; int32_t head; int32_t count; float wsum; PGroups g; };
 static Preferences        g_pr;
 static bool               g_prOk = false;
 static SemaphoreHandle_t  g_prMux = nullptr;
+static uint32_t           g_nvsErrMs = 0;   // ultimo aviso de error de NVS en /log (1 por minuto)
 
-static void persistGroups() {
-  if (!g_prOk) return;
-  PGroups g;
-  portENTER_CRITICAL(&g_mux);
-  g.mallaId = g_mallaId; g.binId = g_binId;
-  g.mallaSum = (float)g_mallaSum; g.binSum = (float)g_binSum;
-  g.mallaTarget = g_mallaTarget; g.binTarget = g_binTarget;
-  g.mallaLast = g_mallaLast; g.binLast = g_binLast;
-  portEXIT_CRITICAL(&g_mux);
-  if (g_prMux) xSemaphoreTake(g_prMux, portMAX_DELAY);
-  g_pr.putBytes("grp", &g, sizeof(g));
-  if (g_prMux) xSemaphoreGive(g_prMux);
+static void nvsError(const char* what) {
+  uint32_t now = millis();
+  if (g_nvsErrMs && now - g_nvsErrMs < 60000) return;
+  g_nvsErrMs = now ? now : 1;
+  diagLog("NVS ERROR al guardar %s", what);
 }
 
+static void fillState(PState* st) {           // llamar con g_mux tomado
+  st->total = g_total; st->head = g_head; st->count = g_count;
+  st->wsum = (float)g_sumAll;
+  st->g.mallaId = g_mallaId; st->g.binId = g_binId;
+  st->g.mallaSum = (float)g_mallaSum; st->g.binSum = (float)g_binSum;
+  st->g.mallaTarget = g_mallaTarget; st->g.binTarget = g_binTarget;
+  st->g.mallaLast = g_mallaLast; st->g.binLast = g_binLast;
+}
+
+// La instantanea se toma con g_prMux YA tomado: asi dos tareas (pesaje y web) nunca
+// escriben una instantanea vieja encima de una nueva.
+static bool writeStateLocked() {
+  PState st;
+  portENTER_CRITICAL(&g_mux);
+  fillState(&st);
+  portEXIT_CRITICAL(&g_mux);
+  return g_pr.putBytes("st", &st, sizeof(st)) == sizeof(st);
+}
+static bool persistState() {
+  if (!g_prOk) return false;
+  if (g_prMux) xSemaphoreTake(g_prMux, portMAX_DELAY);
+  bool ok = writeStateLocked();
+  if (g_prMux) xSemaphoreGive(g_prMux);
+  if (!ok) nvsError("estado");
+  return ok;
+}
+static void persistGroups() { persistState(); }   // objetivos / grupos: van dentro de "st"
+
+// Un pesaje: su slot + el estado (2 escrituras a flash).
 static void persistSlot(int slot) {
   if (!g_prOk) return;
-  PSlot s; PMeta m; float sv;
+  PSlot s;
+  if (g_prMux) xSemaphoreTake(g_prMux, portMAX_DELAY);
   portENTER_CRITICAL(&g_mux);
   s.peso   = g_log[slot].peso;
   s.precio = g_log[slot].precio;
@@ -271,15 +306,13 @@ static void persistSlot(int slot) {
   s.epoch  = (int32_t)g_log[slot].epoch;
   s.malla  = g_log[slot].malla;
   s.bin    = g_log[slot].bin;
-  m.total = g_total; m.head = g_head; m.count = g_count;
-  sv = (float)g_sumAll;
   portEXIT_CRITICAL(&g_mux);
   char k[8]; snprintf(k, sizeof(k), "s%03d", slot);
-  if (g_prMux) xSemaphoreTake(g_prMux, portMAX_DELAY);
-  g_pr.putBytes(k, &s, sizeof(s));
-  g_pr.putBytes("meta", &m, sizeof(m));
-  g_pr.putFloat("wsum", sv);                 // suma acumulada (clave aparte: no rompe el historial viejo)
+  bool ok   = g_pr.putBytes(k, &s, sizeof(s)) == sizeof(s);
+  bool stOk = writeStateLocked();
   if (g_prMux) xSemaphoreGive(g_prMux);
+  if (!ok) nvsError("pesaje");
+  if (!stOk) nvsError("estado");
 }
 
 static void persistClear() {
@@ -289,13 +322,39 @@ static void persistClear() {
   if (g_prMux) xSemaphoreGive(g_prMux);
 }
 
+static void loadSlots(const PMeta& m);
+static void loadSumAndGroups(const PState* st);
 static void persistLoad() {
   g_prMux = xSemaphoreCreateMutex();
   g_prOk  = g_pr.begin("weigh", false);
-  if (!g_prOk) return;
-  PMeta m;
-  if (g_pr.getBytes("meta", &m, sizeof(m)) != sizeof(m)) return;   // aun no hay nada
-  if (m.count < 0 || m.count > WEIGH_LOG_SIZE) return;             // basura -> ignora
+  if (!g_prOk) {
+    Serial.println("[pesaje] NVS no abre: el historial NO se guardara al apagar");
+    diagLog("NVS no abre: pesajes solo en RAM y archivo");
+    return;
+  }
+  PState st;
+  bool haveSt = g_pr.getBytes("st", &st, sizeof(st)) == sizeof(st);
+  PMeta m = {};
+  bool haveMeta = haveSt;
+  if (haveSt) { m.total = st.total; m.head = st.head; m.count = st.count; }
+  else        haveMeta = g_pr.getBytes("meta", &m, sizeof(m)) == sizeof(m);   // formato anterior
+  if (haveMeta && (m.count < 0 || m.count > WEIGH_LOG_SIZE)) haveMeta = false; // basura -> ignora
+  if (haveMeta) loadSlots(m);
+  loadSumAndGroups(haveSt ? &st : nullptr);
+  if (!haveSt) {                       // formato anterior (o vacio): se migra YA al blob "st"
+    if (persistState()) {
+      static const char* old[] = { "meta", "wsum", "grp", "mId", "bId", "mSum", "bSum",
+                                   "mTgt", "bTgt", "mLast", "bLast" };
+      for (const char* k : old) if (g_pr.isKey(k)) g_pr.remove(k);
+      if (haveMeta) Serial.println("[pesaje] NVS migrado al formato agrupado (\"st\")");
+    }
+  }
+  Serial.printf("[pesaje] historial cargado de NVS: %d en buffer, %lu total, suma %.2f\n",
+                g_count, (unsigned long)g_total, (double)g_sumAll);
+}
+
+// buffer de pesajes (slots) segun los contadores
+static void loadSlots(const PMeta& m) {
   g_total = m.total;
   g_head  = (m.head >= 0 && m.head < WEIGH_LOG_SIZE) ? m.head : 0;
   g_count = m.count;
@@ -314,6 +373,18 @@ static void persistLoad() {
     }
   }
   relatch();                                   // g_latched = ultimo pesaje NO borrado
+}
+
+// suma acumulada y grupos: del blob "st" si existe; si no, de las claves anteriores
+static void loadSumAndGroups(const PState* st) {
+  if (st) {
+    g_sumAll = st->wsum;
+    g_mallaId = st->g.mallaId ? st->g.mallaId : 1; g_binId = st->g.binId ? st->g.binId : 1;
+    g_mallaSum = st->g.mallaSum; g_binSum = st->g.binSum;
+    g_mallaTarget = st->g.mallaTarget; g_binTarget = st->g.binTarget;
+    g_mallaLast = st->g.mallaLast; g_binLast = st->g.binLast;
+    return;
+  }
   // suma acumulada: la clave "wsum" si existe; si no (instalacion vieja), se
   // reconstruye con lo que haya en el buffer (>= los ultimos WEIGH_LOG_SIZE).
   float sv = g_pr.getFloat("wsum", NAN);
@@ -347,11 +418,7 @@ static void persistLoad() {
     g_binTarget   = g_pr.getFloat ("bTgt", 0.0f);
     g_mallaLast   = g_pr.getFloat ("mLast", NAN);
     g_binLast     = g_pr.getFloat ("bLast", NAN);
-    persistGroups();     // migra YA al blob nuevo (si eran claves viejas; si no habia nada, guarda los defaults)
   }
-
-  Serial.printf("[pesaje] historial cargado de NVS: %d en buffer, %lu total, suma %.2f\n",
-                g_count, (unsigned long)g_total, (double)g_sumAll);
 }
 #else
 static void persistSlot(int)  {}
@@ -372,7 +439,14 @@ static long nowEpoch() {
 // lotes (HIST_BATCH) y al arrancar.  Mientras esperan, esos pesajes ya estan a
 // salvo en el buffer (NVS): si se apaga antes, se archivan en el proximo arranque.
 // Si el archivo no esta disponible, no hace nada.
+static void archiveFlushLocked();
 static void archiveFlushPending() {
+  if (!histWritable()) return;
+  if (!histLock(0)) return;            // la web esta usando el archivo: queda para el proximo lote
+  archiveFlushLocked();
+  histUnlock();
+}
+static void archiveFlushLocked() {
   if (!histWritable()) return;
   uint32_t lastId = histLastId();
   HRec* tmp = (HRec*)malloc(sizeof(HRec) * WEIGH_LOG_SIZE);
@@ -500,8 +574,7 @@ static Weighing logAppend(float peso, float precio, float total, uint32_t ms) {
   g_alive++;
   w = g_log[slot];
   portEXIT_CRITICAL(&g_mux);
-  persistSlot(slot);
-  persistGroups();
+  persistSlot(slot);                          // slot + estado (contadores, suma, grupos)
   // al archivo permanente en lotes: asi hay pocas escrituras a flash.  Mientras
   // tanto el pesaje ya esta a salvo en el buffer (NVS).
   if (histWritable() && (uint32_t)(w.id - histLastId()) >= HIST_BATCH) archiveFlushPending();
@@ -597,7 +670,11 @@ bool weighDeleteOne(uint32_t id) {
   portEXIT_CRITICAL(&g_mux);
   if (target >= 0) {
     persistSlot(target);
+    // con el candado: si la tarea del pesaje estaba archivando justo esta fila, se
+    // espera a que termine y entonces ya figura como archivada -> se marca borrada
+    histLock(HIST_WAIT_FOREVER);
     if (id <= histLastId()) histMarkDeleted(id); // ya estaba en el archivo: se marca como borrado
+    histUnlock();
     Serial.printf("[web] fila #%lu borrada\n", (unsigned long)id);
   }
   return target >= 0;
@@ -613,7 +690,9 @@ void weighClear() {
   // operario se conservan aunque se borre todo el historial.
   portEXIT_CRITICAL(&g_mux);
   g_resetPending = true;     // la tarea del sniffer hace smReset() en su proxima vuelta
+  histLock(HIST_WAIT_FOREVER);
   histClear();        // primero el archivo permanente: si se corta la luz a medias, en el peor caso
+  histUnlock();
                       // reaparecen las ultimas WEIGH_LOG_SIZE filas del buffer, no todo el historial
   persistClear();     // borra TODO el namespace NVS...
   persistGroups();    // ...asi que hay que volver a guardar objetivos/ids ya mismo
@@ -651,16 +730,21 @@ static bool allVisit(const HRec& r, void* p) {
   return true;
 }
 
+// Con el candado del archivo tomado durante todo el recorrido: la tarea del pesaje
+// no archiva mientras tanto (lo deja para el proximo lote), asi que el corte por id
+// entre "archivo" y "buffer" es exacto: ni faltan ni se repiten filas.
 void weighForEachAll(WeighVisit cb, void* ctx) {
   AllCtx a = { cb, ctx, false };
-  histForEach(allVisit, &a);                     // 1) lo archivado, del mas viejo al mas nuevo
-  if (a.stop) return;
-  uint32_t lastId = histLastId();                // 2) lo del buffer que aun no esta en el archivo
   Weighing* w = (Weighing*)malloc(sizeof(Weighing) * WEIGH_LOG_SIZE);
-  if (!w) return;
-  int n = weighGet(w, WEIGH_LOG_SIZE);           // reciente primero, sin borrados, con id
-  for (int i = n - 1; i >= 0; i--)
-    if (w[i].id > lastId && !cb(w[i], ctx)) break;
+  histLock(HIST_WAIT_FOREVER);
+  uint32_t lastId = histLastId();                // corte: <= lastId sale del archivo, > del buffer
+  histForEach(allVisit, &a);                     // 1) lo archivado, del mas viejo al mas nuevo
+  if (!a.stop && w) {
+    int n = weighGet(w, WEIGH_LOG_SIZE);         // 2) reciente primero, sin borrados, con id
+    for (int i = n - 1; i >= 0; i--)
+      if (w[i].id > lastId && !cb(w[i], ctx)) break;
+  }
+  histUnlock();
   free(w);
 }
 
@@ -773,7 +857,8 @@ static float sustainedValue(const uint32_t* cnt, const float* acc) {
 // Cierra la gaveta en curso y decide que se guarda (ver la regla arriba).
 // passedZero = false cuando se cierra porque el display quedo ilegible: no paso por cero.
 static void closeLoad(uint32_t now, bool passedZero) {
-  uint32_t dur = now - g_loadMs;
+  // duracion: hasta ahora, o hasta que el display dejo de dar datos (sin pasar por cero)
+  uint32_t dur = ((passedZero || !g_badMs) ? now : g_badMs) - g_loadMs;
   bool pause = isPauseValue();
   if (pause) g_sP = g_sPr = g_sT = NAN;
   float est = pause ? NAN : sustainedValue(g_qN, g_qSum);  // quieto >= 2 refrescos
@@ -784,8 +869,12 @@ static void closeLoad(uint32_t now, bool passedZero) {
     how = 'x';
   }
   if (!passedZero) {
-    logLost("display", dur);
-  } else if (dur < (uint32_t)WEIGH_MIN_MS) {
+    // display congelado o ilegible con la gaveta puesta: se guarda lo mejor que se vio
+    // (el estable; si no hubo, el estimado) y no se acepta otra gaveta hasta ver cero.
+    diagLog("DISPLAY sin datos %lu ms con gaveta: se cierra", (unsigned long)(now - g_badMs));
+    g_waitZero = true;
+  }
+  if (dur < (uint32_t)WEIGH_MIN_MS) {
     logLost("corta", dur);                                 // un golpe de la mano, no una gaveta
   } else if (!isnan(g_sP)) {
     commitWeighing(g_sP, g_sPr, g_sT, 0, dur);             // valor estable (siempre >= WEIGH_MIN_LOAD)
@@ -808,11 +897,13 @@ static void smStartLoad(uint32_t now) {
 
 void weighFeed(float peso, float precio, float total, bool stableHint, bool valid, bool fresh) {
   (void)stableHint;
-  if (g_resetPending) { g_resetPending = false; smReset(); }   // pedido por weighClear() (otra tarea)
+  if (g_resetPending) { g_resetPending = false; smReset(); g_waitZero = false; }   // pedido por weighClear()
   uint32_t now = millis();
+  if (fresh) g_lastFreshMs = now;
+  bool frozen = g_lastFreshMs && (now - g_lastFreshMs > (uint32_t)WEIGH_FRAME_TIMEOUT_MS);
 
-  // ---- display ilegible / dormido ----
-  if (!valid || isnan(peso) || peso > WEIGH_MAX_LOAD) {  // ilegible, o fuera de rango (888.8)
+  // ---- display ilegible / dormido / congelado (sin refrescos nuevos) ----
+  if (!valid || frozen || isnan(peso) || peso > WEIGH_MAX_LOAD) {  // ilegible, fuera de rango (888.8) o congelado
     if (g_badMs == 0) g_badMs = now;
     if (g_phase == PH_LOAD && now - g_badMs >= WEIGH_INVALID_MS)
       closeLoad(now, false);                             // no paso por cero: no se guarda
@@ -822,13 +913,23 @@ void weighFeed(float peso, float precio, float total, bool stableHint, bool vali
 
   // ------------------------------------------------------------ VACIA
   if (g_phase == PH_EMPTY) {
+    if (g_waitZero) {                                    // la gaveta cerrada por display puede seguir encima
+      static uint32_t since = 0; static bool told = false;
+      if (!since) since = now;
+      if (peso <= WEIGH_ZERO_THRESH) { g_waitZero = false; since = 0; told = false; return; }
+      if (!told && now - since > 10000) {                // aviso (una vez): no se aceptan gavetas aun
+        told = true;
+        diagLog("ESPERANDO CERO tras cierre por display (peso %.1f)", (double)peso);
+      }
+      return;
+    }
     if (peso < WEIGH_MIN_LOAD) return;
     smStartLoad(now);                                    // y esta misma lectura ya cuenta (abajo)
   }
 
   // ------------------------------------------------------------ CON CARGA
   if (peso <= WEIGH_ZERO_THRESH) {                       // paso por cero o quedo negativa...
-    if (++g_zeroN >= WEIGH_ZERO_N) closeLoad(now, true); // ...varias lecturas seguidas: no un glitch
+    if (fresh && ++g_zeroN >= WEIGH_ZERO_N) closeLoad(now, true); // ...varios REFRESCOS seguidos: no un glitch
     return;
   }
   g_zeroN = 0;

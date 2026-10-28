@@ -457,7 +457,7 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
    <textarea id=csvbox readonly hidden></textarea>
  </details>
 
- <p class=foot>Diagnóstico: <a href=/log>ver</a> · <a href="/log?dl=1">descargar</a></p>
+ <p class=foot>Diagnóstico: <a href=/log>ver</a> · <a href="/log?dl=1">descargar</a> · <a href=# onclick="return clrRep(this)">borrar informes de reinicio</a></p>
 </div>
 <div class=gpop id=gpop hidden onclick="hideGpop()">
   <div class=card onclick="event.stopPropagation()">
@@ -528,11 +528,21 @@ document.addEventListener('visibilitychange',function(){
   if(!document.hidden){ resumeAt=Date.now(); tick(); }
 });
 var lastN=-1, tickBusy=false;
+var lastClk=0;
+function clrRep(a){
+  if(!confirm('¿Borrar los informes de reinicios inesperados? (no borra pesajes)')) return false;
+  fetch('/log/clear',{method:'POST'}).then(function(r){ a.textContent=r.ok?'informes borrados':'no se pudo borrar'; })
+   .catch(function(){ a.textContent='no se pudo borrar'; });
+  return false;
+}
 async function tick(){
  if(tickBusy) return;                       // ya hay una en camino: no amontonar
  tickBusy=true;
  try{
   var j=await getJ('/api',2000);
+  if(j.clock===false && Date.now()-lastClk>10000){       // la placa perdio la hora (reinicio): se la reenvia
+    lastClk=Date.now(); fetch('/settime?epoch='+Math.floor(Date.now()/1000)).catch(function(){});
+  }
   lastOk=Date.now();
   el('live').classList.add('up');
   watchStale();                           // si estaba en SIN SEÑAL, se quita al instante
@@ -791,7 +801,7 @@ function delClick(){ el('confirm').hidden=false; }
 function cancelClear(){ el('confirm').hidden=true; }
 function doClear(){
   el('confirm').hidden=true;
-  fetch('/weighings/clear').then(function(){ lastN=-1; histDirty=true; el('last').style.display='none'; tabla(); tick(); });
+  fetch('/weighings/clear',{method:'POST'}).then(function(){ lastN=-1; histDirty=true; el('last').style.display='none'; tabla(); tick(); });
 }
 try{fetch('/settime?epoch='+Math.floor(Date.now()/1000));}catch(e){}
 setInterval(tick,1000); tick();
@@ -880,6 +890,7 @@ static void handleApi() {
   h += ",\"capstate\":\""; h += weighStateName(); h += "\"";
   h += ",\"rssi\":"; h += (int)WiFi.RSSI();
   h += ",\"uptime\":"; h += (unsigned long)(millis() / 1000);
+  h += ",\"clock\":"; h += (time(nullptr) > 1700000000) ? "true" : "false";   // false = el panel debe mandar la hora
   h += ",\"fan\":"; h += fanIsOn() ? "true" : "false";          // ventilacion de la caja
   h += ",\"tchip\":"; jnum(h, fanTempAvg(), 0);
 #if WEIGH_SIM
@@ -900,7 +911,7 @@ static void handleWeighings() {
   float latched = weighLatched();
   uint32_t now = millis();
 
-  String h; h.reserve(3200);
+  String h; h.reserve(6144);
   h += "{\"latched\":";
   h += isnan(latched) ? "null" : String(latched, 2);
   int alive = weighCount();
@@ -1042,6 +1053,14 @@ static void handleSetTime() {
   if (ep <= 1700000000) { S->send(400, "text/plain", "epoch invalido"); return; }
   struct timeval tv; tv.tv_sec = (time_t)ep; tv.tv_usec = 0;
   settimeofday(&tv, nullptr);
+  diagClockSet();                                      // fecha del informe de reinicio (si lo hubo)
+  S->send(200, "text/plain", "ok");
+}
+
+//  borra los informes de reinicios guardados en flash (solo POST, con confirmacion en el panel)
+static void handleLogClear() {
+  diagClearReports();
+  S->sendHeader("Cache-Control", "no-store");
   S->send(200, "text/plain", "ok");
 }
 
@@ -1073,6 +1092,7 @@ static void handleLog() {
 
 // --------------------------------------------------------------------------
 #if ENABLE_SNIFFER
+#if SNIFFER_DEBUG   // captura / resolver mapa
 // captura un estado conocido:  /snif_cap?p=6.50&pr=1.00&t=6.50
 static void handleSnifCap() {
   int n = snifCapture(S->arg("p").c_str(), S->arg("pr").c_str(), S->arg("t").c_str());
@@ -1087,6 +1107,8 @@ static void handleSnifSolve() {
   snifSolve(rep, sizeof(rep));
   S->send(200, "text/plain", rep);
 }
+
+#endif  // SNIFFER_DEBUG
 
 static void handleSniffer() {
   String h; h.reserve(9200);
@@ -1244,6 +1266,7 @@ static void handleSnifJson() {
   S->send(200, "application/json", h);
 }
 
+#if SNIFFER_DEBUG   // prueba de pines
 static void handleSnifProbe() {
   char rep[200];
   snifPinProbe(rep, sizeof(rep));
@@ -1251,12 +1274,15 @@ static void handleSnifProbe() {
   S->send(200, "text/plain", rep);
 }
 
+#endif  // SNIFFER_DEBUG
+
 static void handleSnifReset() {
   snifResetStats();
   S->sendHeader("Cache-Control", "no-store");
   S->send(200, "text/plain", "medidas de reloj/flancos reiniciadas");
 }
 
+#if SNIFFER_DEBUG   // restaurar mapa / volcado crudo
 static void handleSnifMapReset() {
   snifResetParams();
   S->sendHeader("Cache-Control", "no-store");
@@ -1284,9 +1310,12 @@ static void handleSnifRaw() {
   if (chunk.length()) S->sendContent(chunk);
   S->sendContent("");
 }
+#endif  // SNIFFER_DEBUG
+
 #endif  // ENABLE_SNIFFER
 
 // --------------------------------------------------------------------------
+#if SNIFFER_DEBUG   // pagina /config
 static int   argI(const char* k, int def)   { return S->hasArg(k) ? S->arg(k).toInt()   : def; }
 
 static void field(String& h, const char* name, const String& val, const char* label, int width = 90) {
@@ -1354,6 +1383,8 @@ static void handleConfigPost() {
   S->send(303, "text/plain", "guardado");
 }
 
+#endif  // SNIFFER_DEBUG
+
 // --------------------------------------------------------------------------
 void webBegin(WebServer& srv) {
   S = &srv;
@@ -1365,25 +1396,30 @@ void webBegin(WebServer& srv) {
   S->on("/api", handleApi);
   S->on("/weighings",       handleWeighings);
   S->on("/weighings.csv",   handleWeighingsCsv);
-  S->on("/weighings/clear", handleWeighingsClear);   // GET o POST, da igual
+  S->on("/weighings/clear", HTTP_POST, handleWeighingsClear);   // solo POST: un enlace o precarga no borra
   S->on("/weighings/del",   handleWeighingsDelOne);   // ?id=12 -> borra esa fila
   S->on("/targets",         handleSetTargets);        // ?malla=200&bin=800
   S->on("/info",            handleSetInfo);           // ?sector=A&piscina=12
   S->on("/settime",         handleSetTime);
   S->on("/log",             handleLog);                 // diagnostico (?dl=1 lo descarga)
+  S->on("/log/clear", HTTP_POST, handleLogClear);       // borra los informes de reinicio (flash)
 #if ENABLE_SNIFFER
   S->on("/sniffer",        handleSniffer);
   S->on("/snif.json",      handleSnifJson);
+  S->on("/snif_reset",     handleSnifReset);
+#if SNIFFER_DEBUG          // calibracion (cambian el mapa o paran el bus): no en campo
   S->on("/sniffer/raw",    handleSnifRaw);
   S->on("/snif_cap",       handleSnifCap);
   S->on("/snif_capclear",  handleSnifCapClear);
   S->on("/snif_solve",     handleSnifSolve);
   S->on("/snif_probe",     handleSnifProbe);
-  S->on("/snif_reset",     handleSnifReset);
   S->on("/snif_mapreset",  handleSnifMapReset);
 #endif
+#endif
+#if SNIFFER_DEBUG
   S->on("/config", HTTP_GET,  handleConfigGet);
   S->on("/config", HTTP_POST, handleConfigPost);
+#endif
 
   // Portal cautivo: cualquier ruta desconocida.  Si hay un AP en marcha (el
   // movil se acaba de conectar y su SO sondea una URL fija para "ver si hay

@@ -78,6 +78,11 @@
 #include "weighsim.h"
 #include "fan.h"
 #include <esp_wifi.h>
+#include <nvs.h>
+
+// salud de la tarea del pesaje: loop() vigila que siga dando vueltas
+static TaskHandle_t       g_weighTask   = nullptr;
+static volatile uint32_t  g_weighBeatMs = 0;      // millis() de su ultima vuelta
 
 #if WIFI_CAPTIVE
   #include <DNSServer.h>
@@ -211,6 +216,18 @@ static void diagStatus() {
   // formato compacto: con 4 celulares sigue cabiendo en los 64 caracteres de la linea
   diagLog("ST c=%d t=%.0f r[%s] h=%lu/%lu f=%u", WiFi.softAPgetStationNum(), (double)tc, rs,
           (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap(), fps);
+  // memoria contigua mas grande (fragmentacion), pila libre minima de cada tarea y
+  // entradas de NVS usadas/total: para medir en la placa lo que la auditoria estimo
+  nvs_stats_t ns = {};
+  nvs_get_stats(nullptr, &ns);
+  diagLog("MEM ma=%lu pila w=%u l=%u nvs=%u/%u", (unsigned long)ESP.getMaxAllocHeap(),
+          g_weighTask ? (unsigned)uxTaskGetStackHighWaterMark(g_weighTask) : 0u,
+          (unsigned)uxTaskGetStackHighWaterMark(nullptr),
+          (unsigned)ns.used_entries, (unsigned)ns.total_entries);
+  Serial.printf("[mem] ma=%lu pila w=%u l=%u nvs=%u/%u\n", (unsigned long)ESP.getMaxAllocHeap(),
+                g_weighTask ? (unsigned)uxTaskGetStackHighWaterMark(g_weighTask) : 0u,
+                (unsigned)uxTaskGetStackHighWaterMark(nullptr),
+                (unsigned)ns.used_entries, (unsigned)ns.total_entries);
 }
 
 // Mide cuanto tarda cada vuelta del bucle principal (y cuanto de eso es el
@@ -254,6 +271,7 @@ static void loopTiming(uint32_t loopUs, uint32_t webUs) {
 static void weighTaskFn(void*) {
   uint32_t tw = 0;
   for (;;) {
+    g_weighBeatMs = millis();
     snifLoop();
     // cada WEIGH_FEED_MS (config.h, 20 ms ~= 50 Hz): mas muestras = pilla
     // mejor el transitorio al retirar la gaveta rapido.
@@ -367,6 +385,7 @@ void setup() {
 
   diagBegin();                         // registro /log: anota el motivo del ultimo reinicio
   weighBegin();                        // recupera el historial guardado en NVS
+  diagBootReport();                    // informe del reinicio anterior -> flash (ya montada)
 
 #if ENABLE_SNIFFER
   snifBegin();
@@ -377,7 +396,10 @@ void setup() {
 #endif
   // mismo nucleo que este setup() (ver comentario junto a weighTaskFn mas arriba)
   // 8 KB, como loop(): el guardado (NVS + archivo LittleFS + printf) corre en esta tarea
-  xTaskCreatePinnedToCore(weighTaskFn, "weigh", 8192, nullptr, 1, nullptr, xPortGetCoreID());
+  if (xTaskCreatePinnedToCore(weighTaskFn, "weigh", 8192, nullptr, 1, &g_weighTask, xPortGetCoreID()) != pdPASS) {
+    Serial.println("[pesaje] ERROR: no se pudo crear la tarea del pesaje");
+    diagLog("ERROR: tarea del pesaje NO creada (no se pesa)");
+  }
 #endif
 
   wifiConnect();
@@ -425,6 +447,14 @@ void loop() {
                   WiFi.softAPgetStationNum(), (unsigned long)g_apRecoverCount,
                   fanIsOn() ? 1 : 0, (double)fanTempAvg());
     wifiCheckHealth();     // red de seguridad: por si el AP quedo "zombie" sin avisar
+#if ENABLE_SNIFFER
+    {                      // la tarea del pesaje da una vuelta cada ~1 ms: 5 s sin vueltas = colgada
+      static bool stuck = false;
+      uint32_t age = millis() - g_weighBeatMs;
+      if (g_weighTask && age > 5000 && !stuck) { stuck = true; diagLog("PESAJE detenido hace %lu ms", (unsigned long)age); }
+      else if (age <= 5000 && stuck)           { stuck = false; diagLog("PESAJE reanudado"); }
+    }
+#endif
   }
   fanUpdate(millis());     // ventilacion de la caja (mide cada FAN_CHECK_MS)
 

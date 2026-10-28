@@ -15,6 +15,13 @@
 
 #include <LittleFS.h>
 #include <vector>
+#include <unistd.h>                    // truncate() (VFS de LittleFS)
+#include <esp_partition.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "diaglog.h"
+
+#define LFS_MOUNT "/littlefs"          // punto de montaje por defecto de LittleFS en Arduino-ESP32
 #include <algorithm>
 
 static_assert(sizeof(HRec) == 24, "HRec debe medir 24 bytes");
@@ -34,23 +41,71 @@ static size_t   s_histBytes = 0;       // bytes de registros COMPLETOS en /hist.
 static size_t   s_delBytes  = 0;       // tamaño de /del.bin
 static uint32_t s_lastId   = 0;        // mayor id archivado
 static std::vector<uint32_t> s_del;    // ids borrados, ORDENADO
+static bool     s_mountFailed = false; // hay datos en la particion pero no monta
+static SemaphoreHandle_t s_lock = nullptr;
+
+bool histLock(uint32_t waitMs) {
+  if (!s_lock) s_lock = xSemaphoreCreateMutex();      // 1ª llamada: en setup(), una sola tarea
+  if (!s_lock) return false;
+  TickType_t t = (waitMs == HIST_WAIT_FOREVER) ? portMAX_DELAY : pdMS_TO_TICKS(waitMs);
+  return xSemaphoreTake(s_lock, t) == pdTRUE;
+}
+void histUnlock() { if (s_lock) xSemaphoreGive(s_lock); }
+bool histMountFailed() { return s_mountFailed; }
+
+// Recorta un archivo al ultimo registro completo (corte de luz a mitad de una
+// escritura).  true si quedo alineado.
+static bool trimTail(const char* path, size_t recSize) {
+  File f = LittleFS.open(path, "r");
+  if (!f) return true;                 // no existe: nada que recortar
+  size_t size = f.size();
+  f.close();
+  size_t whole = size - (size % recSize);
+  if (whole == size) return true;
+  char full[48];
+  snprintf(full, sizeof(full), LFS_MOUNT "%s", path);
+  bool ok = (truncate(full, (off_t)whole) == 0);
+  Serial.printf("[hist] %s: cola rota de %u bytes -> %s\n", path, (unsigned)(size - whole),
+                ok ? "recortada" : "NO se pudo recortar");
+  diagLog("ARCHIVO %s cola rota %uB %s", path, (unsigned)(size - whole), ok ? "recortada" : "SIN RECORTAR");
+  return ok;
+}
+
+// ¿la particion de datos esta virgen (todo 0xFF en sus 2 primeros bloques, donde
+// LittleFS guarda el superbloque)?  Solo entonces se formatea sin preguntar.
+static bool partitionBlank() {
+  const esp_partition_t* p = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                                      ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+  if (!p) p = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_LITTLEFS, nullptr);
+  if (!p) return false;
+  uint8_t buf[256];
+  for (size_t off = 0; off < 8192 && off < p->size; off += sizeof(buf)) {
+    if (esp_partition_read(p, off, buf, sizeof(buf)) != ESP_OK) return false;
+    for (size_t i = 0; i < sizeof(buf); i++) if (buf[i] != 0xFF) return false;
+  }
+  return true;
+}
 
 // Recalcula tamaño y ultimo id leyendo el archivo.  Si tiene una cola rota
 // (bytes que no completan un registro) deja de escribir para no desalinear.
+// (calcula en variables locales y asigna al final: quien lea histLastId() desde
+//  otra tarea nunca ve un 0 a mitad de calculo)
 static void syncFromFile() {
-  s_histBytes = 0;
-  s_lastId = 0;
+  size_t bytes = 0;
+  uint32_t lastId = 0;
   File h = LittleFS.open(HIST_FILE, "r");
-  if (!h) return;
+  if (!h) { s_histBytes = 0; s_lastId = 0; return; }
   size_t size  = h.size();
   size_t whole = size - (size % sizeof(HRec));
-  s_histBytes = whole;
+  bytes = whole;
   if (whole) {
     h.seek(whole - sizeof(HRec));
     HRec last;
-    if (h.read((uint8_t*)&last, sizeof(last)) == sizeof(last)) s_lastId = last.id;
+    if (h.read((uint8_t*)&last, sizeof(last)) == sizeof(last)) lastId = last.id;
   }
   h.close();
+  s_histBytes = bytes;
+  s_lastId = lastId;
   if (size != whole) {
     s_writable = false;
     Serial.printf("[hist] AVISO: /hist.bin con cola rota (%u bytes sobrantes) -> solo lectura\n",
@@ -63,16 +118,29 @@ static void updateFull() {
 }
 
 bool histBegin() {
+  if (!s_lock) s_lock = xSemaphoreCreateMutex();      // antes de que exista ninguna otra tarea
   s_ready = s_writable = s_full = false;
   s_cap = s_histBytes = s_delBytes = 0;
   s_lastId = 0;
   s_del.clear();
 
-  if (!LittleFS.begin(true)) {         // true = formatea si aun no tiene formato (1ª vez)
-    Serial.println("[hist] LittleFS no monta (¿esquema de particiones sin SPIFFS?)"
-                   " -> solo el buffer de los ultimos pesajes");
-    return false;
+  s_mountFailed = false;
+  // Nunca se formatea una particion con datos: si no monta (corte de luz a mitad de
+  // una escritura de metadatos, por ejemplo) se AVISA y se sigue solo con el buffer
+  // de los ultimos pesajes.  Solo una particion virgen (1ª vez) se formatea.
+  if (!LittleFS.begin(false)) {
+    if (partitionBlank() && LittleFS.begin(true)) {
+      Serial.println("[hist] particion virgen: formateada (1ª vez)");
+    } else {
+      s_mountFailed = true;
+      Serial.println("[hist] LittleFS NO monta y la particion tiene datos: NO se formatea"
+                     " -> solo el buffer de los ultimos pesajes");
+      diagLog("ARCHIVO no monta: NO se formatea; solo ultimos pesajes");
+      return false;
+    }
   }
+  trimTail(HIST_FILE, sizeof(HRec));   // corte de luz a mitad de escritura -> se recorta
+  bool delOk = trimTail(DEL_FILE, sizeof(uint32_t));  // (si /hist.bin no se pudo recortar, syncFromFile lo detecta)
   s_cap = (size_t)(((uint64_t)LittleFS.totalBytes() * HIST_CAP_PCT) / 100);
 
   {                                    // borrados
@@ -88,7 +156,7 @@ bool histBegin() {
   }
 
   s_ready = true;
-  s_writable = true;
+  s_writable = delOk;                  // /del.bin con cola sin recortar: anadirle ids lo desalinearia
   syncFromFile();                      // puede poner s_writable = false si hay cola rota
   updateFull();
   Serial.printf("[hist] archivo listo: %lu registros, ultimo id %lu, %u borrados, "
@@ -198,6 +266,9 @@ void histForEach(HistVisit cb, void* ctx) {
 #else   // WEIGH_ARCHIVE 0 (o sin persistencia): todo inerte
 
 bool     histBegin()                           { return false; }
+bool     histMountFailed()                     { return false; }
+bool     histLock(uint32_t)                    { return true; }
+void     histUnlock()                          {}
 bool     histReady()                           { return false; }
 bool     histWritable()                        { return false; }
 bool     histFull()                            { return false; }

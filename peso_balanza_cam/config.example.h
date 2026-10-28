@@ -58,6 +58,7 @@
 //  pines/RAM).  No hay otro metodo de lectura; esto es solo para pruebas del
 //  panel web sin la balanza conectada.
 #define ENABLE_SNIFFER   1
+#define SNIFFER_DEBUG    0     // 1 = rutas de calibracion del bus (/config, /snif_*): solo para una balanza nueva
 //  Pines a evitar en el ESP32-S3 Super Mini (esta placa NO tiene conector de
 //  camara ni de microSD, asi que ese bloqueo de la placa anterior ya no
 //  aplica -- lo que queda es del SILICIO del chip, vale para cualquier placa):
@@ -128,7 +129,9 @@
 #define WEIGH_MAX_LOAD      80.0f   // mas que esto = fuera de rango, se ignora (prueba de display
                                     //   "888.8" al encender, presion fuerte de la mano)
 #define WEIGH_MIN_MS        600     // ms minimos puesta para guardarse (un golpe de la mano no es gaveta)
-#define WEIGH_INVALID_MS    2500    // display apagado este tiempo con gaveta puesta -> se cierra SIN guardar
+#define WEIGH_INVALID_MS    2500    // display ilegible/congelado este tiempo con gaveta puesta -> se cierra y se
+                                    // guarda el ultimo estable (o el estimado); otra gaveta solo tras ver cero
+#define WEIGH_FRAME_TIMEOUT_MS 1000 // sin un refresco NUEVO del display en este tiempo = display congelado
 #define WEIGH_LOG_SIZE      120     // ultimos N pesajes (en RAM y en flash/NVS)
 #define WEIGH_EPS           0.005f  // diferencia de peso considerada "el mismo valor"
 #define WEIGH_PERSIST       1       // 1 = guarda el historial en NVS (sobrevive apagon)
