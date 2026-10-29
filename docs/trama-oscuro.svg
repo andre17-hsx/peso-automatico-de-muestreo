@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 622" width="900" height="622" role="img" aria-label="Trama del bus SL/DA del display: START, comando 0xC0, 16 bytes (uno por digito) y STOP; cada byte se lee bit a bit en los flancos de subida de SL y sus bits son los segmentos a a g y el punto.">
-<text x="20" y="26" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#e6edf3" text-anchor="start">1 · Trama de datos (una actualización completa del display)</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 622" width="900" height="622" role="img" aria-label="Frame on the display SL/DA bus: START, command 0xC0, 16 bytes (one per digit) and STOP; each byte is read bit by bit on the rising edges of SL, and its bits are segments a to g and the decimal point.">
+<text x="20" y="26" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#e6edf3" text-anchor="start">1 · Data frame (one complete display update)</text>
 <rect x="20" y="42" width="62" height="44" rx="6" fill="#2b2140" stroke="#d2a8ff" stroke-width="1.2"/>
 <text x="51" y="69" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#d2a8ff" text-anchor="middle">START</text>
 <rect x="90" y="42" width="88" height="44" rx="6" fill="#161b22" stroke="#3d444d" stroke-width="1.2"/>
-<text x="134" y="69" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e6edf3" text-anchor="middle">0xC0 | dir</text>
+<text x="134" y="69" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e6edf3" text-anchor="middle">0xC0 | addr</text>
 <rect x="186" y="42" width="34" height="44" rx="5" fill="#161b22" stroke="#3d444d" stroke-width="1.2"/>
 <text x="203.0" y="69" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#9198a1" text-anchor="middle">0</text>
 <rect x="224" y="42" width="34" height="44" rx="5" fill="#161b22" stroke="#3d444d" stroke-width="1.2"/>
@@ -39,26 +39,26 @@
 <rect x="814" y="42" width="62" height="44" rx="6" fill="#2b2140" stroke="#d2a8ff" stroke-width="1.2"/>
 <text x="845" y="69" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#d2a8ff" text-anchor="middle">STOP</text>
 <path d="M186 96 v6 H372 v-6" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round"/>
-<text x="279.0" y="126" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#e6edf3" text-anchor="middle">PESO</text>
-<text x="279.0" y="142" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">5 dígitos · 1 byte cada uno</text>
+<text x="279.0" y="126" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#e6edf3" text-anchor="middle">WEIGHT</text>
+<text x="279.0" y="142" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">5 digits · 1 byte each</text>
 <path d="M384 96 v6 H570 v-6" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round"/>
-<text x="477.0" y="126" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#e6edf3" text-anchor="middle">PRECIO UNITARIO</text>
-<text x="477.0" y="142" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">5 dígitos · 1 byte cada uno</text>
+<text x="477.0" y="126" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#e6edf3" text-anchor="middle">UNIT PRICE</text>
+<text x="477.0" y="142" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">5 digits · 1 byte each</text>
 <path d="M582 96 v6 H806 v-6" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round"/>
-<text x="694.0" y="126" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#e6edf3" text-anchor="middle">IMPORTE TOTAL</text>
-<text x="694.0" y="142" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">6 dígitos · 1 byte cada uno</text>
-<text x="694.0" y="158" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#9198a1" text-anchor="middle">(en la placa el 15 va antes que el 14)</text>
+<text x="694.0" y="126" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#e6edf3" text-anchor="middle">TOTAL PRICE</text>
+<text x="694.0" y="142" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">6 digits · 1 byte each</text>
+<text x="694.0" y="158" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#9198a1" text-anchor="middle">(on the board, 15 comes before 14)</text>
 <text x="51" y="126" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#d2a8ff" text-anchor="middle">DA ↓</text>
-<text x="51" y="142" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">con SL alto</text>
-<text x="134" y="126" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">comando +</text>
-<text x="134" y="142" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">dirección</text>
+<text x="51" y="142" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">with SL high</text>
+<text x="134" y="126" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">command +</text>
+<text x="134" y="142" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">address</text>
 <text x="845" y="126" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#d2a8ff" text-anchor="middle">DA ↑</text>
-<text x="845" y="142" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">con SL alto</text>
-<text x="20" y="198" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#e6edf3" text-anchor="start">2 · Un byte, bit a bit (lo que ve el ESP en los dos hilos)</text>
+<text x="845" y="142" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">with SL high</text>
+<text x="20" y="198" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#e6edf3" text-anchor="start">2 · One byte, bit by bit (what the ESP sees on the two wires)</text>
 <text x="20" y="271.0" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#58a6ff" text-anchor="start">SL</text>
-<text x="20" y="287.0" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="start">reloj</text>
+<text x="20" y="287.0" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="start">clock</text>
 <text x="20" y="349.0" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#ffa657" text-anchor="start">DA</text>
-<text x="20" y="365.0" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="start">datos</text>
+<text x="20" y="365.0" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="start">data</text>
 <path d="M88 252 H148 V286 H178 V252 H208 V286 H238 V252 H268 V286 H298 V252 H328 V286 H358 V252 H388 V286 H418 V252 H448 V286 H478 V252 H508 V286 H538 V252 H568 V286 H598 V252 H640" fill="none" stroke="#58a6ff" stroke-width="2.4" stroke-linejoin="round"/>
 <path d="M668 252 H880" fill="none" stroke="#58a6ff" stroke-width="2.4"/>
 <path d="M88 330 H120 V364 H153 V330 H213 V364 H273 V330 H333 V330 H393 V364 H453 V330 H513 V330 H573 V364 H640" fill="none" stroke="#ffa657" stroke-width="2.4" stroke-linejoin="round"/>
@@ -67,8 +67,8 @@
 <line x1="658" y1="281.0" x2="666" y2="257.0" stroke="#9198a1" stroke-width="1.6" stroke-linecap="round"/>
 <line x1="646" y1="359.0" x2="654" y2="335.0" stroke="#9198a1" stroke-width="1.6" stroke-linecap="round"/>
 <line x1="658" y1="359.0" x2="666" y2="335.0" stroke="#9198a1" stroke-width="1.6" stroke-linecap="round"/>
-<text x="654.0" y="310" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#9198a1" text-anchor="middle">siguen</text>
-<text x="654.0" y="323" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#9198a1" text-anchor="middle">más bytes</text>
+<text x="654.0" y="310" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#9198a1" text-anchor="middle">follow</text>
+<text x="654.0" y="323" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#9198a1" text-anchor="middle">more bytes</text>
 <line x1="178" y1="244" x2="178" y2="372" stroke="#6e7681" stroke-width="1" stroke-linecap="round" stroke-dasharray="3 4"/>
 <path d="M173 243 L183 243 L178 235 Z" fill="#58a6ff"/>
 <circle cx="178" cy="330" r="4" fill="#ffa657" stroke="#0d1117" stroke-width="1.5"/>
@@ -109,16 +109,16 @@
 <circle cx="598" cy="364" r="4" fill="#ffa657" stroke="#0d1117" stroke-width="1.5"/>
 <text x="598" y="390" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="12.5" font-weight="700" fill="#e6edf3" text-anchor="middle">b7</text>
 <text x="598" y="406" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="400" fill="#9198a1" text-anchor="middle">dp</text>
-<text x="178" y="424" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">LSB · primero</text>
-<text x="598" y="424" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">MSB · último</text>
-<text x="458" y="230" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="600" fill="#58a6ff" text-anchor="middle">▲ el ESP lee DA en cada flanco de subida de SL</text>
+<text x="178" y="424" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">LSB · first</text>
+<text x="598" y="424" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">MSB · last</text>
+<text x="458" y="230" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="600" fill="#58a6ff" text-anchor="middle">▲ the ESP reads DA on every rising edge of SL</text>
 <text x="120" y="390" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#d2a8ff" text-anchor="middle">START</text>
 <text x="752" y="390" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#d2a8ff" text-anchor="middle">STOP</text>
-<text x="120" y="406" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#9198a1" text-anchor="middle">DA ↓ con SL alto</text>
-<text x="752" y="406" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#9198a1" text-anchor="middle">DA ↑ con SL alto</text>
+<text x="120" y="406" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#9198a1" text-anchor="middle">DA ↓ with SL high</text>
+<text x="752" y="406" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#9198a1" text-anchor="middle">DA ↑ with SL high</text>
 <line x1="120" y1="244" x2="120" y2="372" stroke="#d2a8ff" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="3 4"/>
 <line x1="752" y1="244" x2="752" y2="372" stroke="#d2a8ff" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="3 4"/>
-<text x="20" y="456" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#e6edf3" text-anchor="start">3 · Un byte = un dígito de 7 segmentos  (ejemplo: 0x6D = "5")</text>
+<text x="20" y="456" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#e6edf3" text-anchor="start">3 · One byte = one 7-segment digit  (example: 0x6D = "5")</text>
 <rect x="20" y="472" width="54" height="60" rx="6" fill="#3b1a17" stroke="#ff5a44" stroke-width="1.6"/>
 <text x="47.0" y="490" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#9198a1" text-anchor="middle">bit 0</text>
 <text x="47.0" y="516" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="20" font-weight="700" fill="#ff5a44" text-anchor="middle">a</text>
@@ -152,7 +152,7 @@
 <text x="467.0" y="516" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="20" font-weight="700" fill="#9198a1" text-anchor="middle">dp</text>
 <text x="467.0" y="548" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="400" fill="#9198a1" text-anchor="middle">0</text>
 <text x="20" y="572" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="12.5" font-weight="400" fill="#9198a1" text-anchor="start">0x6D = 0b01101101   (bit 7 … bit 0)</text>
-<text x="20" y="592" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#9198a1" text-anchor="start">Otros: 0x3F = "0" · 0x06 = "1" · 0x7F = "8" · 0x40 = "−" · 0x00 = blanco</text>
+<text x="20" y="592" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#9198a1" text-anchor="start">Others: 0x3F = "0" · 0x06 = "1" · 0x7F = "8" · 0x40 = "−" · 0x00 = blank</text>
 <g transform="translate(640 452) scale(1.55)">
 <polygon points="7,7 12,2 40,2 45,7 40,12 12,12" fill="#ff5a44"/>
 <polygon points="44,9 49,14 49,38 44,43 39,38 39,14" fill="#30363d"/>

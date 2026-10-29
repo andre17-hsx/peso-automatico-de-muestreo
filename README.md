@@ -1,204 +1,222 @@
-# Peso automático de muestreo
+# Automatic sampling scale reader
 
-Leer automáticamente el valor de una **balanza cuenta-precio** (placa `ACS-JC36CV28` +
-placa de display `WP-91110-2540-V7`, chip `CS2540`) y enviarlo a un sistema de muestreo.
+Automatically read the value shown by a **price-computing scale** (`ACS-JC36CV28` main board +
+`WP-91110-2540-V7` display board, `CS2540` chip) and send it to a sampling system.
 
-## Panel web
+## Web panel
 
-El ESP crea su propia red WiFi y sirve un panel pensado para el móvil, sin internet ni apps:
-réplica de la pantalla LED de la balanza, historial agrupado por BIN y malla, exportación a CSV,
-modo claro/oscuro y avisos de estado.
+The ESP creates its own WiFi network and serves a mobile-first panel, with no internet or apps
+needed: a replica of the scale's LED display, history grouped by BIN and mesh, CSV export,
+light/dark mode and status alerts. The panel's user interface is in Spanish.
 
 <table>
   <tr>
-    <td align="center"><img src="docs/panel-claro.png" width="250" alt="Panel en modo claro"><br><sub>Modo claro</sub></td>
-    <td align="center"><img src="docs/panel-oscuro.png" width="250" alt="Panel en modo oscuro"><br><sub>Modo oscuro</sub></td>
-    <td align="center"><img src="docs/panel-historial.png" width="250" alt="Historial agrupado por BIN y malla"><br><sub>Historial por BIN y malla</sub></td>
+    <td align="center"><img src="docs/panel-claro.png" width="250" alt="Panel in light mode"><br><sub>Light mode</sub></td>
+    <td align="center"><img src="docs/panel-oscuro.png" width="250" alt="Panel in dark mode"><br><sub>Dark mode</sub></td>
+    <td align="center"><img src="docs/panel-historial.png" width="250" alt="History grouped by BIN and mesh"><br><sub>History by BIN and mesh</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="docs/panel-malla-completada.png" width="250" alt="Aviso de malla completada"><br><sub>Aviso al completar una malla</sub></td>
-    <td align="center"><img src="docs/panel-sin-senal.png" width="250" alt="Aviso de SIN SEÑAL"><br><sub>Aviso de «SIN SEÑAL»</sub></td>
+    <td align="center"><img src="docs/panel-malla-completada.png" width="250" alt="Mesh completed alert"><br><sub>Alert when a mesh is completed</sub></td>
+    <td align="center"><img src="docs/panel-sin-senal.png" width="250" alt="NO SIGNAL alert"><br><sub>"SIN SEÑAL" (no signal) alert</sub></td>
     <td></td>
   </tr>
 </table>
 
-<sub>Capturas con datos de ejemplo: el panel real alimentado por un ESP simulado, no son mediciones reales.</sub>
+<sub>Screenshots with sample data: the real panel fed by a simulated ESP, not real measurements.</sub>
 
-## Enfoque elegido: interceptar el bus del display
+## Chosen approach: tap the display bus
 
-La placa principal manda a la placa del display, por **2 hilos** (`DA` = datos, `SL` = reloj),
-el contenido de los 3 displays (PESO 5 dígitos, PRECIO 5, TOTAL 6 = **16 dígitos**).
-El chip `CS2540` es equivalente a un **TM1640**.
+Over **2 wires** (`DA` = data, `SL` = clock), the main board sends the display board the content
+of the 3 displays (WEIGHT 5 digits, PRICE 5, TOTAL 6 = **16 digits**).
+The `CS2540` chip is equivalent to a **TM1640**.
 
-Escuchando esas 2 líneas de forma **pasiva** se obtiene el valor exacto que muestra la
-balanza, sin tocar el circuito de medida y sin problemas de iluminación/OCR.
+Listening to those 2 lines **passively** gives the exact value the scale shows, without touching
+the measuring circuit and without the lighting/OCR problems of a camera.
 
-No hace falta analizador lógico: un **ESP32 / ESP32-S3** hace de sniffer.
+No logic analyzer is needed: an **ESP32 / ESP32-S3** acts as the sniffer.
 
 ## Sketches
 
-| Carpeta | Placa | Qué hace |
+| Folder | Board | What it does |
 |---|---|---|
-| [`sniffer_tm1640/`](sniffer_tm1640/) | cualquier ESP32/ESP32-S3 (Heltec V3) | solo sniffer, vuelca la RAM del display por USB-serie. Para la ingeniería inversa del protocolo. |
-| [`peso_balanza_cam/`](peso_balanza_cam/) | **ESP32-S3 Super Mini** | **Firmware final**: sniffer del bus + historial de pesajes con mallas/BIN + panel web por WiFi. |
+| [`sniffer_tm1640/`](sniffer_tm1640/) | any ESP32/ESP32-S3 (Heltec V3) | sniffer only; dumps the display RAM over USB serial. Used to reverse-engineer the protocol. |
+| [`peso_balanza_cam/`](peso_balanza_cam/) | **ESP32-S3 Super Mini** | **Final firmware**: bus sniffer + weighing history with meshes/BIN + web panel over WiFi. |
 
-> Sniffer en **GPIO1 (SL) / GPIO4 (DA)**, con **diodo Schottky** en serie en DA además de la
-> resistencia de 470 Ω. Arduino IDE: "ESP32S3 Dev Module", flash 4 MB, PSRAM `Disabled`,
-> **USB CDC On Boot `Enabled`** (la placa no tiene CH340).
-> Ver [`peso_balanza_cam/README.md`](peso_balanza_cam/README.md).
+> Sniffer on **GPIO1 (SL) / GPIO4 (DA)**, with a **Schottky diode** in series on DA in addition
+> to the 470 Ω resistor. Arduino IDE: "ESP32S3 Dev Module", 4 MB flash, PSRAM `Disabled`,
+> **USB CDC On Boot `Enabled`** (the board has no CH340).
+> See [`peso_balanza_cam/README.md`](peso_balanza_cam/README.md) (in Spanish).
 
-## Fase 1 — Ingeniería inversa del protocolo (sketch `sniffer_tm1640/`)
+## Phase 1 — Reverse-engineering the protocol (`sniffer_tm1640/` sketch)
 
-### Cómo se intercepta y se decodifica
+### How it is tapped and decoded
 
-Los números de la balanza son **LED de 7 segmentos**. La placa principal no le manda al display
-el número "41.30", sino **qué segmentos encender en cada dígito**, por un bus de 2 hilos que
-entiende el chip `CS2540` (familia TM1640):
+The scale's numbers are **7-segment LEDs**. The main board does not send the display the number
+"41.30", but **which segments to light in each digit**, over a 2-wire bus understood by the
+`CS2540` chip (TM1640 family):
 
-- `SL` = reloj: cada bit vale en el **flanco de subida** de `SL`. `DA` = datos: 8 bits por byte,
-  **primero el menos significativo**.
-- **START** = `DA` baja con `SL` alto · **STOP** = `DA` sube con `SL` alto (como I²C, pero sin ACK).
-- La trama que importa empieza por `0xC0 | dirección` y sigue con **1 byte por dígito** (16 en
-  total: la "RAM" del display). Los comandos de modo (`0x40`) y de brillo (`0x80…0x8F`) se ignoran.
+- `SL` = clock: each bit is valid on the **rising edge** of `SL`. `DA` = data: 8 bits per byte,
+  **least significant bit first**.
+- **START** = `DA` falls while `SL` is high · **STOP** = `DA` rises while `SL` is high (like I²C,
+  but without ACK).
+- The frame that matters starts with `0xC0 | address` and continues with **1 byte per digit** (16 in
+  total: the display "RAM"). Mode (`0x40`) and brightness (`0x80…0x8F`) commands are ignored.
 
-Una actualización del display, de un vistazo (el ESP solo escucha, no envía nada):
+One display update at a glance (the ESP only listens, it never sends anything):
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/trama-oscuro.svg">
-    <img src="docs/trama-claro.svg" width="830" alt="Diagrama de la trama del bus SL/DA del display: START, comando 0xC0 con la dirección, 16 bytes (PESO 0 a 4, PRECIO 5 a 9, TOTAL 10 a 15) y STOP; cada byte se lee bit a bit en los flancos de subida de SL, y sus bits son los segmentos a-g y el punto de un dígito de 7 segmentos.">
+    <img src="docs/trama-claro.svg" width="830" alt="Diagram of the display SL/DA bus frame: START, command 0xC0 with the address, 16 bytes (WEIGHT 0 to 4, PRICE 5 to 9, TOTAL 10 to 15) and STOP; each byte is read bit by bit on the rising edges of SL, and its bits are segments a-g and the decimal point of a 7-segment digit.">
   </picture>
 </p>
 
-**Interceptar = escuchar sin tocar.** `SL` y `DA` entran a dos pines del ESP32 (con 470 Ω en
-serie, un diodo Schottky en `DA` y GND común) y el ESP **nunca escribe en el bus**. Dos
-interrupciones hacen todo el trabajo:
+**Tapping = listening without touching.** `SL` and `DA` go into two ESP32 pins (with 470 Ω in
+series, a Schottky diode on `DA` and a common GND) and the ESP **never writes to the bus**. Two
+interrupts do all the work:
 
-1. **Flanco de subida de `SL`** → lee `DA` y va armando el byte bit a bit.
-2. **Cambio de `DA` con `SL` alto** → START (empieza una trama) o STOP (la cierra y copia sus
-   bytes a una RAM espejo de 16 bytes).
+1. **Rising edge of `SL`** → read `DA` and build the byte bit by bit.
+2. **`DA` change while `SL` is high** → START (a frame begins) or STOP (it ends, and its bytes are
+   copied to a 16-byte mirror RAM).
 
-El reloj del bus es de unos 140 kHz, así que una interrupción normal del ESP32-S3 llega sin
-hardware especial. La copia se lee cuando el bus lleva unos milisegundos callado, para no leer
-un refresco a medias.
+The bus clock is about 140 kHz, so a normal ESP32-S3 interrupt keeps up without special hardware.
+The copy is read once the bus has been quiet for a few milliseconds, so a half-finished refresh
+is never read.
 
-**Decodificar = convertir esos 16 bytes en números:**
+**Decoding = turning those 16 bytes into numbers:**
 
-| Bytes | Campo | Dígitos |
+| Bytes | Field | Digits |
 |---|---|---|
-| 0–4 | PESO | 5 |
-| 5–9 | PRECIO UNITARIO | 5 |
-| 10–15 | IMPORTE TOTAL | 6 (en la placa los dos últimos van cruzados: el 15 antes que el 14) |
+| 0–4 | WEIGHT | 5 |
+| 5–9 | UNIT PRICE | 5 |
+| 10–15 | TOTAL PRICE | 6 (on the board the last two are swapped: 15 comes before 14) |
 
-- **Byte → dígito:** los bits 0–6 son los segmentos `a`–`g` y el bit 7 el punto. Una tabla de
-  7 segmentos lo traduce (`0x3F` = "0", `0x06` = "1", `0x7F` = "8"…), y también "blanco" y el
-  signo "−" (solo el segmento `g`).
-- **Dígitos → valor:** se juntan alineados a la derecha del campo y se coloca el decimal (PESO y
-  TOTAL: 2 decimales fijos; PRECIO: lo marca el punto que encienda la balanza, o es entero).
-- **Robustez:** un icono (NET/TARA…) que se solape con un dígito se tolera (1 segmento de
-  diferencia), y en lo que se muestra en el panel un refresco dañado por ruido se descarta
-  porque difiere de sus vecinos. "Estable" no viene en el bus: lo calcula el ESP cuando el
-  peso lleva 4 refrescos seguidos igual.
+- **Byte → digit:** bits 0–6 are segments `a`–`g` and bit 7 is the decimal point. A 7-segment
+  table translates it (`0x3F` = "0", `0x06` = "1", `0x7F` = "8"…), including "blank" and the
+  "−" sign (segment `g` only).
+- **Digits → value:** the digits are joined right-aligned within the field and the decimal point
+  is placed (WEIGHT and TOTAL: 2 fixed decimals; PRICE: wherever the scale lights the point, or an
+  integer).
+- **Robustness:** an icon (NET/TARE…) overlapping a digit is tolerated (1 segment of difference),
+  and for what the panel shows, a refresh corrupted by noise is discarded because it differs from
+  its neighbours. "Stable" is not on the bus: the ESP computes it when the weight has been the
+  same for 4 refreshes in a row.
 
-Qué byte es qué dígito y qué bit qué segmento es justo lo que se averigua con el procedimiento
-de más abajo; en esta balanza resultó ser el estándar (`a` = bit 0 … `g` = bit 6, punto = bit 7).
+Which byte is which digit and which bit is which segment is exactly what the procedure below
+finds out; on this scale it turned out to be the standard mapping (`a` = bit 0 … `g` = bit 6,
+point = bit 7).
 
-### Conexión (3 cables)
+### Wiring (3 wires)
 
-| Balanza (conector DIS) | → | ESP32 |
+| Scale (DIS connector) | → | ESP32 |
 |---|---|---|
-| `DA`  | `[470 Ω]` | GPIO `PIN_DA` (por defecto 4) |
-| `SL`  | `[470 Ω]` | GPIO `PIN_SL` (por defecto 5) |
-| `GND` | — | `GND` (masa común, **obligatoria**) |
+| `DA`  | `[470 Ω]` | GPIO `PIN_DA` (default 4) |
+| `SL`  | `[470 Ω]` | GPIO `PIN_SL` (default 5) |
+| `GND` | — | `GND` (common ground, **required**) |
 
-- **NO** conectar `VCC_DIS`.
-- Lógica de 3 V → entra directa al GPIO del ESP32-S3, sin level-shifter.
-- Recomendado: un **diodo Schottky** (BAT54 / 1N5817) en serie en `DA`, ánodo hacia la
-  balanza (ver `peso_balanza_cam/README.md`, sección 2).
-- Durante la prueba: balanza con **su batería** (no cargador a la red), ESP32 por USB.
-- Ajusta `PIN_DA` / `PIN_SL` en el `.ino` a dos GPIO libres de tu placa (rango 0–31).
+- Do **NOT** connect `VCC_DIS`.
+- 3 V logic → goes straight into the ESP32-S3 GPIO, no level shifter needed.
+- Recommended: a **Schottky diode** (BAT54 / 1N5817) in series on `DA`, anode toward the scale
+  (see `peso_balanza_cam/README.md`, section 2).
+- During the test: scale on **its own battery** (not the mains charger), ESP32 over USB.
+- Set `PIN_DA` / `PIN_SL` in the `.ino` to two free GPIOs of your board (range 0–31).
 
-### Procedimiento
+### Procedure
 
-1. Cargar `sniffer_tm1640.ino`. Abrir Monitor Serie a **115200**.
-2. **Encender la balanza** → se captura el autotest de segmentos (todos encendidos).
-3. Ir poniendo valores **conocidos** y anotar qué muestra cada pantalla en cada momento:
-   - vacía y en cero
-   - peso patrón (p. ej. 500 g) → `0.500`
-   - otro peso → `1.234`
-   - precio por teclado: `1.00`, `9.99`, `12.50`
-   - plataforma inestable vs estable (icono ESTABLE)
-   - tara / cero
-4. Copiar **todo** el log y analizarlo para deducir:
-   - qué byte (`D00`–`D15`) corresponde a qué dígito físico de qué pantalla
-   - qué bit de cada byte es qué segmento (a–g) y cuál es el punto decimal
-   - qué bits sobrantes son iconos (`kg`/`lb`, ESTABLE, CERO, TARA, NET, batería…)
+1. Flash `sniffer_tm1640.ino`. Open the Serial Monitor at **115200**.
+2. **Turn on the scale** → the segment self-test is captured (all segments on).
+3. Enter **known** values and write down what each display shows at each moment:
+   - empty and at zero
+   - reference weight (e.g. 500 g) → `0.500`
+   - another weight → `1.234`
+   - price on the keypad: `1.00`, `9.99`, `12.50`
+   - unstable vs stable platform (STABLE icon)
+   - tare / zero
+4. Copy the **whole** log and analyze it to deduce:
+   - which byte (`D00`–`D15`) corresponds to which physical digit of which display
+   - which bit of each byte is which segment (a–g) and which is the decimal point
+   - which leftover bits are icons (`kg`/`lb`, STABLE, ZERO, TARE, NET, battery…)
 
-Comandos del Monitor Serie: `d` normal · `c` transacciones crudas · `f` estadísticas ·
-`r` volcado crudo de flancos (solo si la decodificación sale con basura).
+Serial Monitor commands: `d` normal · `c` raw transactions · `f` statistics ·
+`r` raw edge dump (only if decoding comes out as garbage).
 
-## Fase 2 — Firmware final (hecho: `peso_balanza_cam/`)
+## Phase 2 — Final firmware (done: `peso_balanza_cam/`)
 
-Con el mapa de la Fase 1, el firmware:
-- Escucha pasiva → reconstruye los 16 bytes en cada refresco.
-- Aplica el mapa → PESO, PRECIO, TOTAL, puntos decimales, y calcula si el peso está estable.
-- Detecta cuándo se retira una gaveta y guarda **un pesaje** (distingue tara de retiro real);
-  todos los pesajes se conservan (sobreviven a apagones) hasta que se pulse *Borrar todo*:
-  los últimos 120 en NVS y el historial completo en un archivo en flash (LittleFS).
-- Captura el valor con una **ventana tolerante** (acepta el peso aunque el producto escurra o
-  la celda rebote, y nunca guarda un valor de la caída a cero al retirar la gaveta).
-- Lleva un **registro de diagnóstico** en RAM (`/log`, descargable desde el móvil): pesajes
-  guardados/perdidos y por qué, conexiones y señal WiFi, reinicios, esperas del programa.
-- El panel avisa con una franja roja **"SIN SEÑAL"** cuando deja de recibir datos del ESP.
-- Agrupa los pesajes en **mallas y BIN** con objetivos que escribe el operario, y avisa con un
-  pop-up cuando se cierra un grupo.
-- Publica todo por WiFi en un **panel web** (la placa crea su propia red) y exporta CSV.
+With the map from Phase 1, the firmware:
+- Listens passively → rebuilds the 16 bytes on every refresh.
+- Applies the map → WEIGHT, PRICE, TOTAL, decimal points, and works out whether the weight is
+  stable.
+- Detects when a tray is removed and saves **one weighing** (it tells a tare from a real
+  removal); all weighings are kept (they survive power cuts) until *Borrar todo* (clear all) is
+  pressed: the last 120 in NVS and the full history in a file in flash (LittleFS).
+- Captures the value with a **tolerant window** (it accepts the weight even if the product drips
+  or the load cell bounces, and never saves a value from the drop to zero when the tray is
+  removed).
+- Keeps a **diagnostic log** in RAM (`/log`, downloadable from the phone): weighings saved/lost
+  and why, WiFi connections and signal, reboots, program stalls.
+- The panel shows a red **"SIN SEÑAL"** (no signal) bar when it stops receiving data from the
+  ESP.
+- Groups the weighings into **meshes and BINs** with targets typed in by the operator, and shows
+  a pop-up when a group is closed.
+- Publishes everything over WiFi on a **web panel** (the board creates its own network) and
+  exports CSV.
 
-Pendiente: el envío a un servidor externo (MQTT / HTTP). Hay un gancho listo,
-`weighOnCommit()`, que salta una vez por cada pesaje confirmado.
+Pending: sending to an external server (MQTT / HTTP). There is a ready hook, `weighOnCommit()`,
+that fires once for every confirmed weighing.
 
-### Montaje
+### Assembly
 
-La carcasa metálica de la balanza bloquea el WiFi: el ESP32-S3 va en una **caja de plástico
-externa**, alimentado desde la batería de la balanza con un convertidor buck-boost (TPS63020)
-a 3,3 V. Dos ventiladores de 5 V, conmutados con un 2N2222 cada uno, ventilan la caja según la
-temperatura del chip. Esquema completo de la caja:
+The scale's metal housing blocks WiFi: the ESP32-S3 goes in an **external plastic box**, powered
+from the scale's battery through a buck-boost converter (TPS63020) at 3.3 V. Two 5 V fans, each
+switched by a 2N2222, cool the box according to the chip temperature. Full wiring diagram of the
+box:
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/esquema-caja-oscuro.svg">
-    <img src="docs/esquema-caja-claro.svg" width="900" alt="Esquema de la caja: batería Li-ion con fusible F1 e interruptor; rama al TPS63020 que da 3,3 V al pin 3V3 de la ESP32-S3 Super Mini; rama propia con PTC F2 hacia los dos ventiladores, cada uno conmutado por un 2N2222 desde GPIO5 y GPIO6 con 470 ohm en la base y 10 kilohm a masa; y el sniffer del display en GPIO1 y GPIO4.">
+    <img src="docs/esquema-caja-claro.svg" width="900" alt="Box wiring diagram: Li-ion battery with fuse F1 and switch; branch to the TPS63020 that supplies 3.3 V to the 3V3 pin of the ESP32-S3 Super Mini; separate branch with PTC F2 to the two fans, each switched by a 2N2222 from GPIO5 and GPIO6 with 470 ohm on the base and 10 kilohm to ground; and the display sniffer on GPIO1 and GPIO4.">
   </picture>
 </p>
 
-Detalles (materiales, polaridades, cálculo del transistor) en las secciones *Alimentación y
-montaje* y *Ventilación de la caja* de `peso_balanza_cam/README.md`.
+Details (materials, polarities, transistor calculation) are in the *Alimentación y montaje* and
+*Ventilación de la caja* sections of `peso_balanza_cam/README.md` (in Spanish).
 
-## Si el sniffer por interrupción pierde bits
+### Printed circuit board
 
-Síntomas: los 16 bytes salen inconsistentes entre refrescos, o el autotest no da
-`0xFF` en todos.
+The box circuit is also designed as a 2-layer through-hole PCB (KiCad 10, generated by script,
+with ERC, DRC and schematic-to-PCB parity at zero). There are three versions in
+[`hardware/pcb/`](hardware/pcb/):
 
-Opciones, en orden:
-1. Usar el comando `r` y mandar el volcado crudo de flancos → se decodifica offline.
-2. Versión con captura por hardware (periférico **I2S / LCD_CAM** del ESP32-S3,
-   `SL` como reloj, `DA` como dato, vía DMA) — inmune a la velocidad del bus.
-3. Raspberry Pi Pico (~4 €) como analizador lógico con firmware sigrok
-   (proyecto *pico logic analyzer*), más fácil de conseguir que un Saleae.
+| Version | Size | What changes |
+|---|---|---|
+| [v1](hardware/pcb/) | 70 × 50 mm | TPS63020 module off-board, connected through a 4-way terminal block |
+| [v2](hardware/pcb/v2/) | 96 × 53 mm | All terminal blocks in one row on one edge; TPS63020 module mounted on the board |
+| [v3](hardware/pcb/v3/) | 70 × 50 mm | v1 with the TPS63020 module mounted on the board |
 
-## Último recurso: cámara + OCR
+## If the interrupt-based sniffer loses bits
 
-Se probó leer el display por cámara (7 segmentos clásico) antes de pasar al sniffer, y
-se descartó: el sniffer da el valor **exacto** desde el propio bus, sin depender de luz
-ni encuadre, así que es el único método que queda en `peso_balanza_cam/`. Si hiciera
-falta recuperar el enfoque por cámara, está en el historial de git (commits anteriores
-a la limpieza de 2026-10-01). Si no se puede interceptar el bus en una balanza distinta,
-la idea seguiría siendo válida: ESP32-CAM fijo frente al display, exposición bloqueada,
-recorte de ROI por dígito, validación por varios fotogramas (y, si los dígitos confunden
-3/5/6/8/9, una CNN entrenada en vez de la decodificación por segmentos).
+Symptoms: the 16 bytes are inconsistent between refreshes, or the self-test does not give
+`0xFF` in all of them.
 
-## Licencia
+Options, in order:
+1. Use the `r` command and send the raw edge dump → it is decoded offline.
+2. Version with hardware capture (the ESP32-S3 **I2S / LCD_CAM** peripheral, `SL` as clock,
+   `DA` as data, via DMA) — immune to the bus speed.
+3. Raspberry Pi Pico (~€4) as a logic analyzer with sigrok firmware (*pico logic analyzer*
+   project), easier to get than a Saleae.
 
-Código publicado **solo para consulta y como muestra de trabajo (portafolio)**. Todos los derechos
-reservados: no se permite copiarlo, modificarlo, redistribuirlo, venderlo ni usarlo en otros
-proyectos sin autorización por escrito. Detalles en [`LICENSE`](LICENSE).
+## Last resort: camera + OCR
+
+Reading the display with a camera (classic 7-segment recognition) was tried before moving to the
+sniffer, and was dropped: the sniffer gives the **exact** value straight from the bus, without
+depending on light or framing, so it is the only method left in `peso_balanza_cam/`. If the camera
+approach were ever needed again, it is in the git history (commits before the 2026-10-01
+cleanup). If the bus cannot be tapped on a different scale, the idea would still be valid: an
+ESP32-CAM fixed in front of the display, locked exposure, a ROI crop per digit, validation over
+several frames (and, if the digits confuse 3/5/6/8/9, a trained CNN instead of segment decoding).
+
+## License
+
+Code published **for reference and as a work sample (portfolio) only**. All rights reserved: it
+may not be copied, modified, redistributed, sold or used in other projects without written
+permission. Details in [`LICENSE`](LICENSE).

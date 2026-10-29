@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "caja_balanza") (type "KiCad") (uri "${KIPRJMOD}/caja_balanza.pretty") (options "") (descr "Huellas propias"))
+)
