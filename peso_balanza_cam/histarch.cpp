@@ -24,10 +24,18 @@
 #define LFS_MOUNT "/littlefs"          // punto de montaje por defecto de LittleFS en Arduino-ESP32
 #include <algorithm>
 
-static_assert(sizeof(HRec) == 24, "HRec debe medir 24 bytes");
+static_assert(sizeof(HRec) == 16, "HRec debe medir 16 bytes");
 
-static const char* HIST_FILE = "/hist.bin";
+static const char* HIST_FILE = "/hist2.bin";   // formato actual (16 bytes, sin precio/total)
 static const char* DEL_FILE  = "/del.bin";
+
+// Formato anterior (hasta 2026-11-06): /hist.bin con registros de 24 bytes.
+static const char* OLD_FILE  = "/hist.bin";
+static const char* TMP_FILE  = "/hist2.tmp";
+struct __attribute__((packed)) HRecV1 {
+  uint32_t id; float peso; float precio; float total; int32_t epoch; uint16_t malla; uint16_t bin;
+};
+static_assert(sizeof(HRecV1) == 24, "HRecV1 debe medir 24 bytes");
 
 // Se usa como maximo este % de la particion: LittleFS necesita bloques libres
 // para reescribir el ultimo bloque y compactar metadatos.
@@ -117,6 +125,69 @@ static void updateFull() {
   s_full = (s_histBytes + s_delBytes + sizeof(HRec) > s_cap);
 }
 
+// Convierte UNA vez el archivo del formato anterior (/hist.bin, 24 bytes por
+// registro) al actual (/hist2.bin, 16 bytes): copia a /hist2.tmp, comprueba que
+// quedo completo, lo renombra y solo entonces borra el viejo.  Un corte de luz en
+// cualquier punto deja el viejo intacto (se reintenta en el siguiente arranque) o
+// la conversion ya terminada (solo falta borrar el viejo).  Sin espacio o con
+// cualquier error NO se borra nada: devuelve false y el archivo no se usa.
+static bool convertOld() {
+  if (!LittleFS.exists(OLD_FILE)) {                  // nada que convertir
+    if (LittleFS.exists(TMP_FILE)) LittleFS.remove(TMP_FILE);
+    return true;
+  }
+  if (LittleFS.exists(HIST_FILE)) {                  // ya convertido; quedo el viejo por un corte
+    LittleFS.remove(OLD_FILE);
+    if (LittleFS.exists(TMP_FILE)) LittleFS.remove(TMP_FILE);
+    return true;
+  }
+  if (LittleFS.exists(TMP_FILE)) LittleFS.remove(TMP_FILE);   // intento anterior a medias
+  File in = LittleFS.open(OLD_FILE, "r");
+  if (!in) return false;
+  size_t n    = in.size() / sizeof(HRecV1);           // solo registros completos
+  size_t need = n * sizeof(HRec);
+  size_t used = LittleFS.usedBytes(), tot = LittleFS.totalBytes();
+  if (tot < used || need + 16384 > tot - used) {     // margen para los metadatos de LittleFS
+    in.close();
+    Serial.printf("[hist] SIN ESPACIO para convertir %u registros: se conserva el archivo viejo\n", (unsigned)n);
+    diagLog("ARCHIVO sin espacio para convertir (%u reg): se conserva el viejo", (unsigned)n);
+    return false;
+  }
+  File out = LittleFS.open(TMP_FILE, "w");
+  if (!out) { in.close(); return false; }
+  static HRecV1 a[32];                               // static: solo se usa en el arranque
+  static HRec   b[32];
+  size_t done = 0;
+  bool ok = true;
+  while (done < n) {
+    size_t want = (n - done < 32) ? (n - done) : 32;
+    if (in.read((uint8_t*)a, want * sizeof(HRecV1)) != want * sizeof(HRecV1)) { ok = false; break; }
+    for (size_t i = 0; i < want; i++) {
+      b[i].id = a[i].id; b[i].peso = a[i].peso; b[i].epoch = a[i].epoch;
+      b[i].malla = a[i].malla; b[i].bin = a[i].bin;
+    }
+    if (out.write((const uint8_t*)b, want * sizeof(HRec)) != want * sizeof(HRec)) { ok = false; break; }
+    done += want;
+  }
+  in.close();
+  out.close();
+  if (ok) {                                          // comprobar lo que de verdad quedo escrito
+    File t = LittleFS.open(TMP_FILE, "r");
+    ok = t && t.size() == need;
+    if (t) t.close();
+  }
+  if (!ok || !LittleFS.rename(TMP_FILE, HIST_FILE)) {
+    LittleFS.remove(TMP_FILE);
+    Serial.println("[hist] ERROR al convertir el archivo: se conserva el viejo");
+    diagLog("ARCHIVO error al convertir: se conserva el viejo");
+    return false;
+  }
+  LittleFS.remove(OLD_FILE);
+  Serial.printf("[hist] archivo convertido al formato nuevo: %u registros\n", (unsigned)n);
+  diagLog("ARCHIVO convertido al formato nuevo (%u reg)", (unsigned)n);
+  return true;
+}
+
 bool histBegin() {
   if (!s_lock) s_lock = xSemaphoreCreateMutex();      // antes de que exista ninguna otra tarea
   s_ready = s_writable = s_full = false;
@@ -138,6 +209,10 @@ bool histBegin() {
       diagLog("ARCHIVO no monta: NO se formatea; solo ultimos pesajes");
       return false;
     }
+  }
+  if (!convertOld()) {                 // archivo viejo sin convertir: no se toca ni se usa
+    Serial.println("[hist] archivo en formato viejo sin convertir -> solo el buffer de los ultimos pesajes");
+    return false;
   }
   trimTail(HIST_FILE, sizeof(HRec));   // corte de luz a mitad de escritura -> se recorta
   bool delOk = trimTail(DEL_FILE, sizeof(uint32_t));  // (si /hist.bin no se pudo recortar, syncFromFile lo detecta)

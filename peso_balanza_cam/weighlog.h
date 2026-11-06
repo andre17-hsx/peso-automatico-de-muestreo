@@ -19,10 +19,10 @@
 //   UNA entrada por gaveta.  Simple y "time-based": da igual a que ritmo se
 //   llame weighFeed.
 
+// Desde 2026-11-06 el precio unitario y el importe total NO se guardan (no se usan
+// en campo): solo el peso.  El sniffer los sigue leyendo del display.
 struct Weighing {
   float    peso;      // kg  (== "value" antiguo)
-  float    precio;    // precio unitario mostrado (NAN si no legible)
-  float    total;     // suma total mostrada       (NAN si no legible)
   uint32_t ms;        // millis() al capturarlo
   long     epoch;     // hora UTC (s) si hay NTP, si no 0 ;  -1 = fila borrada
   uint32_t id;        // nº de pesaje (para borrar una fila concreta).  Solo RAM,
@@ -59,7 +59,7 @@ void        weighBegin();              // carga el historial de NVS (llamar en s
 // Alimentar con los 3 campos en vivo, a ritmo regular (WEIGH_FEED_MS, ver
 // config.h).  Solo la llama weighTaskFn (su propia tarea, ver el .ino).
 //   peso    : dispara la maquina de estados
-//   precio, total : se guardan junto al peso estable
+//   precio, total : se reciben pero ya NO se guardan (desde 2026-11-06)
 //   stable  : "estable" calculado por el sniffer (ver SNIF_STABLE_N); no se usa,
 //             el pesaje decide con su propia ventana tolerante
 //   valid   : false si el display esta ilegible / apagado / dormido

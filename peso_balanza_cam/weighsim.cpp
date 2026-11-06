@@ -44,7 +44,7 @@ static uint32_t s_t0 = 0, s_gapEnd = 0, s_n = 0;
 
 // valor neto (sin ruido) mientras la gaveta esta puesta, t = ms desde que se empezo a poner
 static float shape(const Tray& r, float t) {
-  if (r.k == K_MOVER) {                // golpes cortos de la mano / balanza movida, siempre < 12 lb
+  if (r.k == K_MOVER) {                // golpes cortos de la mano / balanza movida: < 0,6 s, no cuentan como gaveta
     float ph = fmodf(t, r.pt0);        // pt0 = periodo entre picos
     return -SIM_TARE + (ph < r.plen ? r.pv : 0.0f);
   }
@@ -64,7 +64,7 @@ static void newTray() {
   float d = urand(0, 100);
   r.k = d < 60 ? K_NORMAL : d < 72 ? K_RAPIDO : d < 82 ? K_GOLPE : d < 87 ? K_PAUSA
       : d < 93 ? K_LIVIANO : K_MOVER;
-  r.W     = (r.k == K_LIVIANO) ? urand(4, 11) : (r.k == K_MOVER) ? 0.0f : urand(22, 60);
+  r.W     = (r.k == K_LIVIANO) ? urand(0.5f, 3.5f) : (r.k == K_MOVER) ? 0.0f : urand(22, 60);
   r.tauUp = urand(120, 300);
   static const float drips[] = { 0.0f, 0.05f, 0.10f, 0.15f };
   r.drip  = drips[esp_random() % 4];
@@ -72,7 +72,7 @@ static void newTray() {
   switch (r.k) {
     case K_RAPIDO: r.hold = urand(600, 1300); break;
     case K_GOLPE:  r.ov = urand(0.2f, 0.4f); r.dec = urand(200, 500); r.hold = urand(1500, 3000); break;
-    case K_PAUSA:  r.drip = 0; r.W = urand(30, 60); r.pv = urand(13, 20);   // pausa >= 12 lb (las menores ya no cuentan)
+    case K_PAUSA:  r.drip = 0; r.W = urand(30, 60); r.pv = urand(13, 20);   // pausa >= WEIGH_MIN_LOAD (las menores no cuentan)
                    r.pt0 = urand(150, 350); r.plen = urand(260, 320);
                    r.climb = urand(400, 900); r.hold = r.pt0 + r.plen + r.climb + urand(0, 300); break;
     case K_MOVER:  r.pv = urand(0.3f, 8.0f); r.pt0 = urand(300, 700); r.plen = urand(40, 250);

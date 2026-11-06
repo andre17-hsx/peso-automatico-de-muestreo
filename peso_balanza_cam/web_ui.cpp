@@ -4,7 +4,7 @@
 //  Rutas (las de bus solo si ENABLE_SNIFFER):
 //    /                 panel
 //    /icon.png, /manifest.json   icono y nombre "Balanza" para el acceso directo del celular
-//    /api              JSON estado en vivo (poll 1 s)
+//    /api              JSON estado en vivo (el panel lo pide cada 0,25 s con peso en la balanza, si no cada 1 s)
 //    /weighings        JSON historial de pesajes capturados
 //    /weighings.csv    historial en CSV (para descargar)
 //    /weighings/clear  POST -> borra el historial
@@ -154,10 +154,10 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
  :root{
   color-scheme:light dark;
   --bg1:#eef2f9; --bg2:#dde6f1; --glow:rgba(96,132,205,.20);
-  --tx:#18202e; --tx2:#54607a; --tx3:#8894aa;
+  --tx:#18202e; --tx2:#4a5570; --tx3:#5b667e;
   --glass:rgba(255,255,255,.60); --solid:rgba(255,255,255,.80);
   --brd:rgba(255,255,255,.78); --line:rgba(22,32,58,.11);
-  --acc:#0d8ba6; --accs:rgba(13,139,166,.13);
+  --acc:#0a6e85; --accs:rgba(10,110,133,.13);
   --ok:#1c9c53; --ok-bg:rgba(28,156,83,.10); --amber:#b9770f; --danger:#d13e39; --danger-bg:rgba(209,62,57,.10);
   --led:#ff4326; --ledoff:rgba(255,67,38,.13);
   --scr1:#16181c; --scr2:#0a0b0d; --scrbrd:rgba(255,255,255,.07);
@@ -166,7 +166,7 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
  }
  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
   --bg1:#0b1220; --bg2:#141c2f; --glow:rgba(255,92,64,.13);
-  --tx:#e7ecf4; --tx2:#9aa6bc; --tx3:#69748a;
+  --tx:#e7ecf4; --tx2:#aab5c9; --tx3:#909cb2;
   --glass:rgba(255,255,255,.055); --solid:rgba(22,29,46,.72);
   --brd:rgba(255,255,255,.12); --line:rgba(255,255,255,.08);
   --acc:#5ac8d8; --accs:rgba(90,200,216,.15);
@@ -178,7 +178,7 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
  }}
  :root[data-theme=dark]{
   --bg1:#0b1220; --bg2:#141c2f; --glow:rgba(255,92,64,.13);
-  --tx:#e7ecf4; --tx2:#9aa6bc; --tx3:#69748a;
+  --tx:#e7ecf4; --tx2:#aab5c9; --tx3:#909cb2;
   --glass:rgba(255,255,255,.055); --solid:rgba(22,29,46,.72);
   --brd:rgba(255,255,255,.12); --line:rgba(255,255,255,.08);
   --acc:#5ac8d8; --accs:rgba(90,200,216,.15);
@@ -330,6 +330,9 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
    text-decoration:none;cursor:pointer;white-space:nowrap;transition:transform .12s}
  .hact button:active,.hact .lnk:active{transform:scale(.96)}
  .hact button.danger{border-color:var(--danger);color:var(--danger);background:transparent}
+ .prevbins{display:block;width:100%;margin:0 0 8px;font-size:12.5px;padding:8px 12px;border-radius:9px;
+   border:1px dashed var(--brd);background:transparent;color:var(--tx2);cursor:pointer}
+ .prevbins:active{transform:scale(.98)}
  .confirm{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;
    padding:10px 13px;border-radius:11px;background:var(--danger-bg);
    border:1px solid var(--danger);font-size:12.5px;color:var(--tx)}
@@ -370,18 +373,66 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
  @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
    .bar,.pill,.last,.whist,.totbox,.tgt{background:var(--solid)}
  }
+ /* ---- rediseño 2026-11-06: orden por tarea + accesibilidad (WCAG 2.1 AA) ---- */
+ .lbl,.fhead,.tgt label,.totlbl{font-size:12px}
+ .hint,.foot,.sub,.tgtsub,.wr-n,.wr-t,.wr-v i,.tgt .row i,.hh .cnt{font-size:13px}
+ .ib{width:44px;height:44px}
+ .hact button,.hact .lnk{min-height:44px;padding:10px 14px;font-size:14px;display:inline-flex;align-items:center}
+ .last{margin-top:14px}
+ .last .big{font-size:38px}
+ .prog .ph{display:flex;align-items:baseline;justify-content:space-between}
+ .prog .ph b{font-size:15px;font-weight:750}
+ .prog .ph span{font-size:13px;color:var(--tx2);font-weight:650}
+ .track{height:12px;border-radius:99px;background:var(--line);margin:10px 0 8px;overflow:hidden}
+ .fill{height:100%;width:0;border-radius:99px;background:var(--acc);transition:width .35s}
+ .prog.bin .fill{background:var(--ok)}
+ .prog .tgtsub{font-size:13px;line-height:1.35;margin-top:0}
+ .prog .tgtsub b{font-size:19px;font-weight:800;color:var(--tx)}
+ .prog .row{align-items:center;margin-top:10px;padding-top:8px;border-top:1px solid var(--line);min-height:44px}
+ .prog .row label{display:inline;margin:0;letter-spacing:0;text-transform:none;font-size:13px;font-weight:600;color:var(--tx2)}
+ .prog input{font-size:17px;padding:6px 0;min-height:36px}
+ .jor{margin:0 0 12px}
+ .jor>summary,#hist>summary{display:flex;align-items:center;gap:10px;min-height:52px;list-style:none;font-size:16px}
+ .jor>summary::-webkit-details-marker,#hist>summary::-webkit-details-marker{display:none}
+ .jor>summary{color:var(--tx2);font-size:15px}
+ .jor>summary b{color:var(--tx)}
+ .jor .ed{margin-left:auto;color:var(--acc);font-weight:700;font-size:14px;white-space:nowrap}
+ .jor .targets{margin-top:6px}
+ #hist>summary{color:var(--acc);font-weight:750;font-size:17px}
+ .jor,#hist{padding-top:2px;padding-bottom:2px}
+ .jor[open],#hist[open]{padding-bottom:12px}
+ #hist>summary::before{content:"▸";display:inline-block;font-size:14px;transition:transform .2s}
+ #hist[open]>summary::before{transform:rotate(90deg)}
+ #hist>summary .cnt{font-size:13px;background:var(--accs);border:1px solid var(--line);color:var(--tx);
+   border-radius:9px;padding:3px 9px;font-weight:700}
+ #hist>summary .hbin{margin-left:auto;color:var(--tx2);font-size:14px;font-weight:600}
+ .prevbins{min-height:44px}
+ .wr-del{background:#c0322c;color:#fff}             /* texto blanco legible en los dos temas (5:1) */
 </style>
-<div class=top>
+<header class=top>
  <div class=bar>
-  <span class=ttl>Balanza · muestreo</span>
+  <span class=ttl>Balanza</span>
   <button class=ib id=thm onclick=themeToggle() aria-label="Cambiar tema"></button>
   <span class=live id=live></span>
  </div>
  <div class=stale id=stale role=alert hidden>
   <b>SIN SEÑAL</b><span id=staleTx>los datos NO están actualizados</span>
  </div>
-</div>
-<div class=wrap>
+</header>
+<main class=wrap>
+
+ <details class=jor id=jor><summary><span id=jorTx>Sector y piscina</span><span class=ed>✎ editar</span></summary>
+   <div class=targets>
+     <div class="tgt txt">
+       <label for=inSector>Nombre de sector</label>
+       <div class=row><input type=text id=inSector maxlength=32 autocomplete=off placeholder="Ej. Sector A" onchange="saveInfo('sector',this)"></div>
+     </div>
+     <div class="tgt txt">
+       <label for=inPisc>Número de piscina</label>
+       <div class=row><input type=text id=inPisc maxlength=12 autocomplete=off placeholder="Ej. 12" onchange="saveInfo('piscina',this)"></div>
+     </div>
+   </div>
+ </details>
 
  <div class=screen id=screen>
    <div class=fld>
@@ -389,8 +440,8 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
        <span class=lamp id=lamp><span class=dot></span>ESTABLE</span></div>
      <div class=ledrow id=scPeso></div>
    </div>
-   <div class=dv></div>
-   <div class=grid2>
+   <div class=dv hidden></div>
+   <div class=grid2 hidden><!-- precio e importe: no se usan en campo; el codigo los sigue rellenando -->
      <div class=fld><div class=fhead>PRECIO UNITARIO</div><div class=ledrow id=scPrecio></div></div>
      <div class=fld><div class=fhead>IMPORTE TOTAL</div><div class=ledrow id=scTotal></div></div>
    </div>
@@ -404,31 +455,22 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
  <div class=prow><span class="pill" id=pill><span class=pd></span><span id=pilltx>...</span></span></div>
  <div class=sub id=sub></div>
 
- <div class=targets>
-   <div class="tgt txt">
-     <label for=inSector>Nombre de sector</label>
-     <div class=row><input type=text id=inSector maxlength=32 autocomplete=off placeholder="Ej. Sector A" onchange="saveInfo('sector',this)"></div>
-   </div>
-   <div class="tgt txt">
-     <label for=inPisc>Número de piscina</label>
-     <div class=row><input type=text id=inPisc maxlength=12 autocomplete=off placeholder="Ej. 12" onchange="saveInfo('piscina',this)"></div>
-   </div>
- </div>
+ <div class=last id=last aria-live=polite></div>
 
  <div class=targets>
-   <div class=tgt id=tgtMalla>
-     <label for=inMalla>Ingresar peso de la malla</label>
-     <div class=row><input type=number id=inMalla inputmode=decimal step=0.01 min=0 placeholder="0.00" onchange="saveTgt('malla',this.value)"><i>lb</i></div>
+   <div class="tgt prog" id=tgtMalla>
+     <div class=ph><b id=ttlMalla>Malla</b><span id=pctMalla></span></div>
+     <div class=track><div class=fill id=barMalla></div></div>
      <div class=tgtsub id=subMalla>&nbsp;</div>
+     <div class=row><label for=inMalla>Objetivo</label><input type=number id=inMalla inputmode=decimal step=0.01 min=0 placeholder="0.00" onchange="saveTgt('malla',this.value)"><i>lb</i></div>
    </div>
-   <div class=tgt id=tgtBin>
-     <label for=inBin>Ingresar peso del BIN</label>
-     <div class=row><input type=number id=inBin inputmode=decimal step=0.01 min=0 placeholder="0.00" onchange="saveTgt('bin',this.value)"><i>lb</i></div>
+   <div class="tgt prog bin" id=tgtBin>
+     <div class=ph><b id=ttlBin>BIN</b><span id=pctBin></span></div>
+     <div class=track><div class=fill id=barBin></div></div>
      <div class=tgtsub id=subBin>&nbsp;</div>
+     <div class=row><label for=inBin>Objetivo</label><input type=number id=inBin inputmode=decimal step=0.01 min=0 placeholder="0.00" onchange="saveTgt('bin',this.value)"><i>lb</i></div>
    </div>
  </div>
-
- <div class=last id=last></div>
 
  <div class=totbox>
    <span class=totlbl>PESO TOTAL ACUMULADO</span>
@@ -436,10 +478,7 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
    <span class=totn id=totn>0 muestras</span>
  </div>
 
- <details id=hist><summary>Historial</summary>
-   <div class=hh>
-     <span class=lbl>HISTORIAL</span><span class=cnt id=wc>0</span>
-   </div>
+ <details id=hist><summary><span>Historial</span><span class=cnt id=wc>0</span><span class=hbin id=histBin></span></summary>
    <p class=hint id=histWarn hidden style="color:var(--danger);font-weight:650"></p>
    <div class=hact>
      <button id=btnCsv onclick=copyCsv()>Copiar CSV</button>
@@ -452,13 +491,13 @@ static const char PAGE_INDEX[] PROGMEM = R"HTML(<!doctype html><html lang=es>
      <button onclick=cancelClear()>Cancelar</button>
      <button class=danger onclick=doClear()>Sí, borrar</button>
    </div>
-   <p class=hint>Desliza una fila hacia la izquierda para borrar solo esa.</p>
+   <p class=hint>Toca una fila (o deslízala a la izquierda) para borrar solo esa.</p>
    <div class=whist id=whist><div class=empty>...</div></div>
    <textarea id=csvbox readonly hidden></textarea>
  </details>
 
  <p class=foot>Diagnóstico: <a href=/log>ver</a> · <a href="/log?dl=1">descargar</a> · <a href=# onclick="return clrRep(this)">borrar informes de reinicio</a></p>
-</div>
+</main>
 <div class=gpop id=gpop hidden onclick="hideGpop()">
   <div class=card onclick="event.stopPropagation()">
     <div class=ico><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg></div>
@@ -527,7 +566,7 @@ function watchStale(){
 document.addEventListener('visibilitychange',function(){
   if(!document.hidden){ resumeAt=Date.now(); tick(); }
 });
-var lastN=-1, tickBusy=false;
+var lastN=-1, tickBusy=false, lastHtml='', lastJor='';
 var lastClk=0;
 function clrRep(a){
   if(!confirm('¿Borrar los informes de reinicios inesperados? (no borra pesajes)')) return false;
@@ -544,6 +583,9 @@ async function tick(){
     lastClk=Date.now(); fetch('/settime?epoch='+Math.floor(Date.now()/1000)).catch(function(){});
   }
   lastOk=Date.now();
+  var live=parseFloat(j.sniffer && j.sniffer.peso);   // peso EN VIVO del display (combined.value es el ultimo pesaje)
+  if(j.capstate!=='vacia' || (!isNaN(live) && live>0.06) ||
+     (j.last && j.last.id!==lastN)) activeUntil=lastOk+ACTIVE_HOLD_MS;   // hay actividad: consulta rapida
   el('live').classList.add('up');
   watchStale();                           // si estaba en SIN SEÑAL, se quita al instante
   if(j.disp){
@@ -561,20 +603,30 @@ async function tick(){
           estable:['stable','Peso estable']}[j.capstate]||['wait',j.capstate];
   el('pill').className='pill '+st[0];
   el('pilltx').textContent=st[1];
-  el('sub').textContent=(j.capstate=='estable')?'se guarda al retirar la gaveta':('fuente: '+j.combined.source);
+  el('sub').textContent=(j.capstate=='estable')?'se guarda al retirar la gaveta':'';
   if(j.sim) el('sub').textContent='MODO SIMULADOR: pesajes FALSOS';
   var L=j.last;
   if(L){
     el('last').style.display='block';
-    el('last').innerHTML=
-      '<div class=top><span class=big>'+f2(L.peso)+'</span><span class=k>lb</span>'+
+    var lh='<div class=top><span class=big>'+f2(L.peso)+'</span><span class=k>lb</span>'+
       '<span class=chip>#'+L.n+'</span></div>'+
-      '<div class=meta>precio '+f2(L.precio)+'  ·  total '+f2(L.total)+'</div>';
+      '<div class=meta>último pesaje</div>';
+    if(lh!==lastHtml){ el('last').innerHTML=lh; lastHtml=lh; }   // solo si cambia (lector de pantalla)
     if(L.id!=lastN && lastN>=0){ el('last').classList.remove('new');
       void el('last').offsetWidth; el('last').classList.add('new'); histDirty=true; }
     lastN=L.id;
-  }else{ el('last').style.display='none'; }
-  el('wc').textContent=j.wcount;
+  }else{ el('last').style.display='none'; lastHtml=''; }
+  if(j.bId!==curBinId){                     // empezo otro BIN: el historial muestra solo el nuevo
+    if(curBinId!==null) showPrevBins=false;
+    curBinId=j.bId; histDirty=true;
+  }
+  el('wc').textContent=(j.bCnt!=null)?j.bCnt:j.wcount;   // gavetas del BIN en curso
+  el('histBin').textContent=(j.bId!=null)?'BIN '+j.bId:'';
+  var jt=[];                                 // linea compacta de sector / piscina
+  if(j.sector) jt.push('Sector <b>'+esc(j.sector)+'</b>');
+  if(j.piscina) jt.push('Piscina <b>'+esc(j.piscina)+'</b>');
+  var jh=jt.length?jt.join(' · '):'Sector y piscina';
+  if(jh!==lastJor){ el('jorTx').innerHTML=jh; lastJor=jh; }
   el('totval').innerHTML=f2(j.wsum)+'<i>lb</i>';
   el('totn').textContent=j.wcount+(j.wcount==1?' muestra':' muestras');
   histNotice(j.hist);
@@ -595,6 +647,11 @@ async function tick(){
 // es trabajo para el ESP): al abrirlo, cuando entra un pesaje nuevo o cambia la
 // cantidad (borrado desde otro celular), y cada ~7 s mientras siga abierto.
 var histDirty=true, histT=0, lastWc=-1;
+// El historial muestra solo el BIN EN CURSO (al completarse un BIN queda vacio y se llena
+// con el nuevo); "Ver BIN anteriores" despliega los ya cerrados.  Es solo visual: el
+// total acumulado, el CSV y los subtotales siguen contando todo.
+var curBinId=null, showPrevBins=false;
+function togglePrevBins(){ showPrevBins=!showPrevBins; tabla(); }
 function histPoll(j){
   if(j.wcount!==lastWc){ if(lastWc>=0) histDirty=true; lastWc=j.wcount; }
   if(el('hist').open && (histDirty || Date.now()-histT>7000)) tabla();
@@ -634,11 +691,20 @@ function syncTgtInput(id,val){
   if(el(id).value!==v) el(id).value=v;
 }
 // texto de progreso: SIEMPRE contra el ACUMULADO del grupo en curso, no el peso del momento
+// tarjeta de progreso: titulo ("Malla 2"), % , barra y "acumulado / objetivo · faltan"
 function tgtProgress(subId,sum,tgt,label){
-  var sub=el(subId);
-  if(tgt==null){ sub.textContent='sin objetivo puesto'; return; }
-  var falt=tgt-sum; if(falt<0) falt=0;
-  sub.textContent=label+': '+f2(sum)+' / '+f2(tgt)+' lb  ·  faltan '+f2(falt)+' lb';
+  var k=subId.slice(3), sub=el(subId), pct=0;              // k = 'Malla' | 'Bin'
+  el('ttl'+k).textContent=label.charAt(0).toUpperCase()+label.slice(1);
+  if(tgt==null||!(tgt>0)){
+    sub.innerHTML='<b>'+f2(sum)+'</b> lb<br>sin objetivo puesto';
+  }else{
+    var falt=tgt-sum; if(falt<0) falt=0;
+    pct=Math.min(100,Math.round(sum/tgt*100));
+    sub.innerHTML='<b>'+f2(sum)+'</b> / '+f2(tgt)+' lb<br>faltan '+f2(falt)+' lb';
+  }
+  el('pct'+k).textContent=(tgt>0)?pct+' %':'';
+  el('bar'+k).style.width=pct+'%';
+  el('bar'+k).parentNode.setAttribute('aria-label',label+': '+pct+' %');
 }
 // detecta que un grupo se acaba de CERRAR y dispara la alerta.  La malla se
 // reinicia a 1 en cada BIN, asi que el nº de malla solo NO sirve: se compara el
@@ -719,7 +785,15 @@ async function tabla(){
   // el server manda el reciente primero; se muestra del mas viejo al mas nuevo:
   // BIN 1 (Malla 1, 2, 3…) → BIN 2 (Malla 1, 2…), y dentro de cada malla del pesaje 1 en adelante
   var items=j.items.slice().reverse();
-  var h='', curB=null, curM=null;
+  var prevN=0, h='';
+  if(curBinId!=null){                                 // solo el BIN en curso (salvo "Ver BIN anteriores")
+    prevN=items.filter(function(w){ return w.b!==curBinId; }).length;
+    if(!showPrevBins) items=items.filter(function(w){ return w.b===curBinId; });
+  }
+  if(prevN) h+='<button class=prevbins type=button onclick=togglePrevBins()>'+
+               (showPrevBins?'Ocultar BIN anteriores':'Ver BIN anteriores ('+prevN+(prevN==1?' gaveta)':' gavetas)'))+'</button>';
+  if(!items.length) h+='<div class=empty>BIN '+curBinId+': sin gavetas todavía</div>';
+  var curB=null, curM=null;
   for(var i=0;i<items.length;i++){var w=items[i];
     var kk=w.b+'-'+w.m;
     if(w.b!==curB){ h+=ghdr('BIN '+w.b, binSub[w.b]!==undefined?binSub[w.b]:locB[w.b]); curB=w.b; curM=null; }
@@ -730,7 +804,6 @@ async function tabla(){
            '<div class=wr-top><span class=wr-n>#'+w.n+'</span>'+
              '<span class=wr-v>'+f2(w.v)+'<i>lb</i></span>'+
              '<span class=wr-t>'+esc(hhmm(w.t))+'</span></div>'+
-           '<div class=wr-sub>precio '+f2(w.pu)+' · total '+f2(w.tot)+'</div>'+
          '</div>'+
        '</div>';
   }
@@ -764,9 +837,13 @@ function bindRow(row){
     e.preventDefault();
   });
   function end(){
+    var tap=armed && !drag;                            // toque real (no desplazamiento vertical)
     armed=false;
     front.style.transition='';
-    if(!drag){ row.classList.remove('open'); return; }   // un toque en fila abierta -> cerrar
+    if(!drag){                                         // un toque: muestra / oculta "Borrar" (sin deslizar)
+      if(tap){ var op=!row.classList.contains('open'); closeRows(row); row.classList.toggle('open',op); }
+      return;
+    }
     drag=false; row.classList.remove('drag'); front.style.transform='';
     var open=row.classList.contains('open');
     var next = open ? (dx<38) : (dx<-38);
@@ -774,7 +851,7 @@ function bindRow(row){
     row.classList.toggle('open',next);
   }
   front.addEventListener('pointerup',end);
-  front.addEventListener('pointercancel',end);
+  front.addEventListener('pointercancel',function(){ armed=false; end(); });   // el navegador tomo el gesto (scroll): no es toque
 }
 function delRow(id){
   fetch('/weighings/del?id='+encodeURIComponent(id)).then(function(){
@@ -804,7 +881,17 @@ function doClear(){
   fetch('/weighings/clear',{method:'POST'}).then(function(){ lastN=-1; histDirty=true; el('last').style.display='none'; tabla(); tick(); });
 }
 try{fetch('/settime?epoch='+Math.floor(Date.now()/1000));}catch(e){}
-setInterval(tick,1000); tick();
+// Consulta ADAPTATIVA de /api: rapida (FAST_MS) mientras hay peso en la balanza y
+// ACTIVE_HOLD_MS despues, para que el ultimo pesaje y la pantalla se vean casi al
+// instante cuando las gavetas pasan seguidas; en reposo, cada SLOW_MS (menos trabajo
+// para el ESP y menos bateria del celular).  La espera cuenta desde que llega la
+// respuesta: nunca hay dos peticiones a la vez.
+var FAST_MS=250, SLOW_MS=1000, ACTIVE_HOLD_MS=3000, activeUntil=0;
+function sched(){
+  setTimeout(function(){ tick().then(sched,sched); },
+             Date.now()<activeUntil ? FAST_MS : SLOW_MS);
+}
+tick().then(sched,sched);
 setInterval(watchStale,500);
 </script>
 </html>)HTML";
@@ -857,8 +944,6 @@ static void handleApi() {
       h += "{\"id\":"; h += lw.id;            // clave estable (para el flash "nuevo")
       h += ",\"n\":"; h += wc;                // nº mostrado = posicion (contiguo, sin huecos)
       h += ",\"peso\":"; jnum(h, lw.peso, 2);
-      h += ",\"precio\":"; jnum(h, lw.precio, 2);
-      h += ",\"total\":"; jnum(h, lw.total, 2);
       h += ",\"age\":"; h += (lw.ms ? String((millis() - lw.ms) / 1000) : String("-1"));
       h += ",\"t\":\""; h += ts; h += "\"}";
     } else h += "null";
@@ -875,6 +960,9 @@ static void handleApi() {
     h += ",\"bSum\":";  h += String(g.binSum, 2);
     h += ",\"bTgt\":";  h += (g.binTarget > 0 ? String(g.binTarget, 2) : String("null"));
     h += ",\"bLast\":"; jnum(h, g.binLast, 2);
+    float bs; uint32_t bc = 0;                // gavetas del BIN en curso (contador del historial)
+    if (!weighBinSum(g.binId, &bs, &bc)) bc = 0;
+    h += ",\"bCnt\":";  h += (unsigned long)bc;
   }
   h += ",\"combined\":{\"value\":"; h += isnan(comb) ? String("null") : String(comb, 2);
   h += ",\"source\":\""; h += src; h += "\"}";
@@ -922,8 +1010,6 @@ static void handleWeighings() {
     h += "{\"id\":"; h += w[i].id;            // clave estable para borrar
     h += ",\"n\":"; h += (alive - i);         // nº mostrado = posicion (contiguo)
     h += ",\"v\":";  jnum(h, w[i].peso, 2);
-    h += ",\"pu\":"; jnum(h, w[i].precio, 2);
-    h += ",\"tot\":"; jnum(h, w[i].total, 2);
     h += ",\"m\":"; h += w[i].malla;          // nº de MALLA a la que pertenece
     h += ",\"b\":"; h += w[i].bin;            // nº de BIN   a la que pertenece
     h += ",\"age\":"; h += (w[i].ms ? String((now - w[i].ms) / 1000) : String("-1"));
@@ -975,8 +1061,6 @@ static bool csvVisit(const Weighing& w, void* p) {
   c->n++;
   c->buf += String(c->n);  c->buf += ';';            // nº = posicion (contiguo)
   c->buf += String(w.peso, 2);   c->buf += ';';
-  c->buf += (isnan(w.precio) ? String("") : String(w.precio, 2)); c->buf += ';';
-  c->buf += (isnan(w.total)  ? String("") : String(w.total, 2));  c->buf += ';';
   c->buf += String(w.malla); c->buf += ';';
   c->buf += String(w.bin);   c->buf += ';';
   c->buf += ts;              c->buf += ';';
@@ -995,7 +1079,7 @@ static void handleWeighingsCsv() {
   S->sendHeader("Cache-Control", "no-store");
   S->setContentLength(CONTENT_LENGTH_UNKNOWN);
   S->send(200, "text/csv", "");
-  S->sendContent("n;peso;precio_unit;total;malla;bin;hora_local;sector;piscina\n");
+  S->sendContent("n;peso;malla;bin;hora_local;sector;piscina\n");   // sin precio/total desde 2026-11-06
   CsvCtx c; c.n = 0; c.buf.reserve(1400);
   weighForEachAll(csvVisit, &c);
   if (c.buf.length()) S->sendContent(c.buf);

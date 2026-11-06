@@ -17,7 +17,7 @@
 #define WEIGH_ZERO_THRESH   0.06f   // <= esto: la gaveta paso por cero (o quedo negativa) -> se cierra
 #endif
 #ifndef WEIGH_MIN_LOAD
-#define WEIGH_MIN_LOAD      12.0f   // una gaveta empieza al llegar a este peso; menos = tara / nada
+#define WEIGH_MIN_LOAD      4.0f    // una gaveta empieza al llegar a este peso; menos = tara / nada
 #endif
 #ifndef WEIGH_MAX_LOAD
 #define WEIGH_MAX_LOAD      80.0f   // lecturas por encima = fuera de rango (prueba de display 888.8, presion fuerte)
@@ -243,8 +243,15 @@ static void relatch() {
 
 // -------------------------- persistencia (NVS) ----------------------------
 #if WEIGH_PERSIST
-struct PSlot { float peso; float precio; float total; int32_t epoch; uint16_t malla; uint16_t bin; };
-#define PSLOT_V1_SIZE 16     // tamaño de PSlot ANTES de agregar malla/bin (sin ellos)
+// Slot de NVS (12 bytes, desde 2026-11-06: sin precio ni total).  Se siguen
+// leyendo los slots de formatos anteriores (se van reescribiendo solos con los
+// pesajes nuevos):
+//   v2 (20 bytes): peso, precio, total, epoch, malla, bin
+//   v1 (16 bytes): peso, precio, total, epoch (anterior a malla/bin)
+struct PSlot   { float peso; int32_t epoch; uint16_t malla; uint16_t bin; };
+struct PSlotV2 { float peso; float precio; float total; int32_t epoch; uint16_t malla; uint16_t bin; };
+static_assert(sizeof(PSlot) == 12 && sizeof(PSlotV2) == 20, "tamaños de slot NVS");
+#define PSLOT_V1_SIZE 16     // v1: los primeros 16 bytes de PSlotV2 (sin malla/bin)
 struct PMeta { uint32_t total; int32_t head; int32_t count; };
 // mallaId/binId/sumas/objetivos/ultimo-cerrado EMPAQUETADOS en un solo blob
 // (antes eran 8 claves NVS sueltas -> 8 escrituras a flash por pesaje, cada
@@ -301,8 +308,6 @@ static void persistSlot(int slot) {
   if (g_prMux) xSemaphoreTake(g_prMux, portMAX_DELAY);
   portENTER_CRITICAL(&g_mux);
   s.peso   = g_log[slot].peso;
-  s.precio = g_log[slot].precio;
-  s.total  = g_log[slot].total;
   s.epoch  = (int32_t)g_log[slot].epoch;
   s.malla  = g_log[slot].malla;
   s.bin    = g_log[slot].bin;
@@ -359,15 +364,21 @@ static void loadSlots(const PMeta& m) {
   g_head  = (m.head >= 0 && m.head < WEIGH_LOG_SIZE) ? m.head : 0;
   g_count = m.count;
   for (int i = 0; i < WEIGH_LOG_SIZE; i++) {
-    PSlot s = {};                                 // cero -> malla/bin=0 si el registro es viejo
     char k[8]; snprintf(k, sizeof(k), "s%03d", i);
-    size_t n = g_pr.getBytes(k, &s, sizeof(s));
-    if (n == sizeof(s) || n == PSLOT_V1_SIZE) {    // formato nuevo completo, o viejo (sin malla/bin)
+    size_t len = g_pr.getBytesLength(k);
+    PSlot s = {};                                 // cero -> malla/bin=0 si el registro es v1
+    bool ok = false;
+    if (len == sizeof(PSlot)) {                   // formato actual
+      ok = g_pr.getBytes(k, &s, sizeof(s)) == sizeof(s);
+    } else if (len == sizeof(PSlotV2) || len == PSLOT_V1_SIZE) {   // formatos anteriores
+      PSlotV2 o = {};
+      ok = g_pr.getBytes(k, &o, sizeof(o)) == len;
+      s.peso = o.peso; s.epoch = o.epoch; s.malla = o.malla; s.bin = o.bin;
+    }
+    if (ok) {
       g_log[i].peso   = s.peso;
-      g_log[i].precio = s.precio;
-      g_log[i].total  = s.total;
       g_log[i].epoch  = s.epoch;
-      g_log[i].malla  = s.malla;                  // 0 si venia del formato viejo (ver arriba)
+      g_log[i].malla  = s.malla;                  // 0 si venia del formato v1 (ver arriba)
       g_log[i].bin    = s.bin;
       g_log[i].ms     = 0;                        // millis de otra sesion -> desconocido
     }
@@ -460,8 +471,6 @@ static void archiveFlushLocked() {
     HRec& r = tmp[cnt++];
     r.id     = id;
     r.peso   = g_log[idx].peso;
-    r.precio = g_log[idx].precio;
-    r.total  = g_log[idx].total;
     r.epoch  = (int32_t)g_log[idx].epoch;
     r.malla  = g_log[idx].malla;
     r.bin    = g_log[idx].bin;
@@ -521,7 +530,7 @@ static void archiveBoot() {
 }
 
 // añade UNA entrada nueva al historial y devuelve una copia (con su epoch/ms)
-static Weighing logAppend(float peso, float precio, float total, uint32_t ms) {
+static Weighing logAppend(float peso, uint32_t ms) {
   long ep = nowEpoch();
   Weighing w;
   portENTER_CRITICAL(&g_mux);
@@ -561,8 +570,6 @@ static Weighing logAppend(float peso, float precio, float total, uint32_t ms) {
   }
 
   g_log[slot].peso   = peso;
-  g_log[slot].precio = precio;
-  g_log[slot].total  = total;
   g_log[slot].ms     = ms;
   g_log[slot].epoch  = ep;
   g_log[slot].id     = g_total;               // solo RAM (weighGet lo recalcula al leer)
@@ -723,7 +730,7 @@ struct AllCtx { WeighVisit cb; void* ctx; bool stop; };
 static bool allVisit(const HRec& r, void* p) {
   AllCtx* a = (AllCtx*)p;
   Weighing w;
-  w.peso = r.peso; w.precio = r.precio; w.total = r.total;
+  w.peso = r.peso;
   w.ms = 0; w.epoch = r.epoch; w.id = r.id;
   w.malla = r.malla; w.bin = r.bin;
   if (!a->cb(w, a->ctx)) { a->stop = true; return false; }
@@ -801,9 +808,9 @@ static void commitWeighing(float peso, float precio, float total, char how, uint
     diagLog("DESCARTE sin valor carga=%lu", (unsigned long)dur);
     return;
   }
-  Weighing w = logAppend(peso, precio, total, millis());
-  Serial.printf("[pesaje] %s -> GUARDADO  PESO %.2f  PRECIO %.2f  TOTAL %.2f\n",
-                how ? "ESTIMADO" : "estable", (double)w.peso, (double)w.precio, (double)w.total);
+  (void)precio; (void)total;                             // ya no se guardan (desde 2026-11-06)
+  Weighing w = logAppend(peso, millis());
+  Serial.printf("[pesaje] %s -> GUARDADO  PESO %.2f\n", how ? "ESTIMADO" : "estable", (double)w.peso);
   g_diagCnt.traysOk++;
   if (how == 'q')
     diagLog("OK %.1f e carga=%lu max=%.1f quieto", (double)w.peso, (unsigned long)dur, (double)g_ldMax);
@@ -829,7 +836,7 @@ static void logLost(const char* where, uint32_t dur) {
 }
 
 // Caso "pausa a mitad de colocacion" (visto en campo el 2026-09-30 a 5.3 lb; hoy una pausa
-// por debajo de WEIGH_MIN_LOAD ya no cuenta, esto cubre las de 12 lb o mas): el estable duro
+// por debajo de WEIGH_MIN_LOAD ya no cuenta, esto cubre las de WEIGH_MIN_LOAD o mas): el estable duro
 // muy poco y despues el peso subio mucho por encima -> ese estable no era el peso real.
 // Duracion del estable = tramo aceptado + la ventana que hizo falta para el 1er acepto.
 // Si estuvo quieto WEIGH_PLAUS_HOLD_MS o mas, una subida posterior es una PRESION de la mano

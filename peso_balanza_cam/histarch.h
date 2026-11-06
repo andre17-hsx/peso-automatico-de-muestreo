@@ -7,8 +7,10 @@
 //  El buffer circular de weighlog guarda solo los ultimos WEIGH_LOG_SIZE
 //  pesajes.  Este modulo guarda TODOS (hasta que se pulse "Borrar todo") en un
 //  archivo de solo-añadir:
-//     /hist.bin : registros de 24 bytes (HRec), en orden de id
-//     /del.bin  : ids borrados a mano (uint32 cada uno)
+//     /hist2.bin : registros de 16 bytes (HRec), en orden de id
+//     /del.bin   : ids borrados a mano (uint32 cada uno)
+//  Hasta 2026-11-06 era /hist.bin con registros de 24 bytes (incluia precio y
+//  total); histBegin() lo convierte UNA vez al formato nuevo (ver histarch.cpp).
 //  Es OPCIONAL y a prueba de fallos: si LittleFS no monta (esquema de
 //  particiones sin "spiffs") o el archivo se llena, weighlog sigue funcionando
 //  exactamente como antes con su buffer.  WEIGH_ARCHIVE 0 lo desactiva.
@@ -17,12 +19,10 @@
 struct __attribute__((packed)) HRec {
   uint32_t id;        // nº de pesaje (el mismo id que usa weighlog)
   float    peso;
-  float    precio;    // NAN si no legible
-  float    total;     // NAN si no legible
   int32_t  epoch;     // hora UTC (s), 0 = desconocida
   uint16_t malla;
   uint16_t bin;
-};                    // 24 bytes
+};                    // 16 bytes
 
 bool     histBegin();                      // monta LittleFS y carga los borrados; false = sin archivo
 bool     histMountFailed();                // la particion tiene datos pero NO monta (no se formateo: aviso)

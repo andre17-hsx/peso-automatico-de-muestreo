@@ -36,13 +36,21 @@ para probar el panel web sin la balanza conectada. No hay otro método de lectur
   partición es donde se guarda el **historial completo** de pesajes (ver sección 3); sin ella
   el programa funciona igual, pero solo conserva los últimos 120 pesajes. El binario ocupa
   ~1,1 MB y no se usa OTA, así que cualquiera de estos sirve; la diferencia es cuántos
-  pesajes caben (unos 24 bytes cada uno, usando el 75 % de la partición):
+  pesajes caben (16 bytes cada uno desde 2026-11-06, usando el 75 % de la partición):
 
   | Esquema | SPIFFS | Pesajes |
   |---|---|---|
-  | `Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)` | 128 KB | ~4 000 |
-  | `Huge APP (3MB No OTA/1MB SPIFFS)` | 896 KB | ~28 000 |
-  | `No OTA (2MB APP/2MB SPIFFS)` *(recomendado)* | 1,9 MB | ~61 000 |
+  | `Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)` | 128 KB | ~6 000 |
+  | `Huge APP (3MB No OTA/1MB SPIFFS)` | 896 KB | ~42 000 |
+  | `No OTA (2MB APP/2MB SPIFFS)` *(recomendado)* | 1,9 MB | ~91 000 |
+
+  **Formato del historial (2026-11-06):** ya no se guardan PRECIO ni TOTAL (no se usan en
+  campo): solo peso, hora, malla y BIN. El archivo pasó de `/hist.bin` (24 bytes por
+  pesaje) a `/hist2.bin` (16 bytes). El primer arranque con este firmware lo convierte una
+  sola vez de forma segura (copia a `/hist2.tmp`, comprueba, renombra y recién entonces
+  borra el viejo; un corte de luz deja el viejo intacto y se reintenta). Si no hay espacio o
+  falla, no se borra nada y `/log` lo avisa. Los últimos 120 en NVS se leen en cualquiera de
+  los formatos. **Volver a un firmware anterior no ve el historial convertido.**
 
   La primera vez que arranca con una partición nueva (vacía) la formatea (unos segundos,
   más cuanto más grande sea) antes de levantar el WiFi. Una partición **con datos** que no
@@ -63,7 +71,7 @@ para probar el panel web sin la balanza conectada. No hay otro método de lectur
 
 | Modo | Qué hace |
 |:---:|---|
-| **0** *(actual)* | El ESP **crea su red** `WIFI_AP_SSID` / `WIFI_AP_PASS`. Panel en **`http://192.168.4.1/`**. Para campo, sin router. |
+| **0** *(actual)* | El ESP **crea su red** `WIFI_AP_SSID` / `WIFI_AP_PASS`. Panel en **`http://192.168.4.1/`** o **`http://balanza.local/`** (`WIFI_HOSTNAME`, mDNS: va bien en iPhone y en Android reciente; si un celular no lo abre, `192.168.4.1` funciona siempre). Para campo, sin router. |
 | 1 | Se une al router (`WIFI_SSID`/`WIFI_PASS`). Si no puede en 15 s y `WIFI_AP_FALLBACK 1`, crea su red. |
 | 2 | Las dos: su red **siempre**, y además se une al router si lo ve (sin bloquear). Sirve para oficina. |
 
@@ -241,18 +249,19 @@ y 100 kΩ a masa. **No uses IRF520/IRFZ44N** (sin la "L"): con 3,3 V apenas cond
 `weighlog.cpp`. Regla simple (desde 2026-10-07):
 
 ```
- VACÍA ──(peso ≥ WEIGH_MIN_LOAD, 12 lb)──▶ CON CARGA
+ VACÍA ──(peso ≥ WEIGH_MIN_LOAD, 4 lb)──▶ CON CARGA
  CON CARGA: se busca el valor ESTABLE (ventana tolerante) y se recuerda el MÁXIMO
    └─ el peso pasa por CERO o queda NEGATIVO (≤ WEIGH_ZERO_THRESH) ──▶ se cierra la gaveta:
-        1. hubo valor estable ≥ 12 lb ─────────────▶ se GUARDA ese valor     ('r' en /log)
+        1. hubo valor estable ≥ 4 lb ──────────────▶ se GUARDA ese valor     ('r' en /log)
         2. no lo hubo ─────────────▶ se GUARDA el valor donde estuvo QUIETA más tiempo ('e … sost')
         (los dos solo si la gaveta estuvo puesta ≥ WEIGH_MIN_MS, 600 ms; si no → PERDIDO)
  Lecturas > WEIGH_MAX_LOAD (80 lb) se ignoran (prueba de display "888.8", presión muy fuerte).
 ```
 
-- **Menos de 12 lb es tara o nada**: una gaveta siempre pesa más. Mover o tocar la balanza,
-  re-tarar con la gaveta vacía o el ruido alrededor de cero nunca abren un pesaje, y nunca
-  se guarda un valor (estable ni estimado) por debajo de 12 lb.
+- **Menos de 4 lb es tara o nada**: la gaveta más liviana vista en campo pesó 5 lb y una
+  gaveta vacía pesa menos de 2 lb (antes el umbral era 12 lb y las gavetas livianas se
+  perdían; cambiado tras la prueba de campo del 2026-11-06). Mover o tocar la balanza, re-tarar con la gaveta vacía o el ruido alrededor de cero nunca abren un pesaje, y nunca
+  se guarda un valor (estable ni estimado) por debajo de 4 lb.
 - **Una gaveta por paso por cero**: si se cambia una gaveta por otra sin que el peso llegue a
   cero, cuentan como una sola (se guarda la primera). En la práctica siempre se quita antes
   de poner la siguiente.
@@ -268,7 +277,7 @@ y 100 kΩ a masa. **No uses IRF520/IRFZ44N** (sin la "L"): con 3,3 V apenas cond
 - **Nunca se guarda un pesaje sin valor**: si no hay valor estable ni máximo válido, la gaveta
   queda como `PERDIDO` en `/log`.
 - **600 ms mínimos**: un golpe o apoyo corto de la mano sobre la plataforma no es una gaveta.
-  Una mano apoyada con ≥ 12 lb durante más de 0,6 s sí se guardaría (no se distingue de una
+  Una mano apoyada con ≥ 4 lb durante más de 0,6 s sí se guardaría (no se distingue de una
   gaveta muy rápida).
 - Desde la versión con el estado de NVS agrupado (`"st"`), el primer arranque convierte lo
   guardado al formato nuevo y borra las claves anteriores: **no vuelvas a cargar un firmware
@@ -281,7 +290,8 @@ y 100 kΩ a masa. **No uses IRF520/IRFZ44N** (sin la "L"): con 3,3 V apenas cond
   (la misma gaveta podría seguir encima cuando vuelva el display).
 - El punto verde del panel lo calcula el sniffer (el PESO lleva `SNIF_STABLE_N` = 4 refrescos
   seguidos igual; no viene en el bus): es solo visual y no decide qué valor se guarda.
-- **PRECIO y TOTAL** se toman con el valor estable (o el último precio visto, para el estimado).
+- **PRECIO y TOTAL** se siguen leyendo del display, pero desde 2026-11-06 **no se guardan**
+  (solo el peso).
 - Monitor Serie: `[pesaje] carga detectada...` · `[pesaje] estable -> GUARDADO PESO 41.30 ...` ·
   `[pesaje] ESTIMADO -> GUARDADO ...`.
 
@@ -291,7 +301,7 @@ firmware no convierte nada, así que la balanza debe estar en **libras**):
 | Parámetro | Qué es | Por defecto |
 |---|---|---|
 | `WEIGH_ZERO_THRESH` | por debajo (o igual) durante 3 **refrescos nuevos** seguidos del display (~165 ms, `WEIGH_ZERO_N`) = la gaveta pasó por cero → se cierra; un refresco suelto de 0 no cierra | `0.06` |
-| `WEIGH_MIN_LOAD` | una gaveta empieza al llegar a este peso; menos = tara / nada | `12` |
+| `WEIGH_MIN_LOAD` | una gaveta empieza al llegar a este peso; menos = tara / nada | `4` |
 | `WEIGH_MAX_LOAD` | lecturas por encima se ignoran (como display ilegible): prueba de display, presión fuerte | `80` |
 | `WEIGH_MIN_MS` | tiempo mínimo puesta para guardarse (un golpe de la mano no es gaveta) | `600` |
 | `WEIGH_INVALID_MS` | display ilegible o congelado este tiempo con gaveta puesta → se cierra y se guarda el último estable (o el estimado) | `2500` |
@@ -323,7 +333,7 @@ firmware no convierte nada, así que la balanza debe estar en **libras**):
 **Pausa a mitad de colocación (`WEIGH_PLAUS_FRAC`, `WEIGH_PLAUS_HOLD_MS`).** Encontrado en campo
 (2026-09-30): la gaveta se detiene un instante en un valor que **no es el final** (todavía se
 está posando) y se retira antes de asentar en el peso real (caso real: `5.3` lb; hoy las pausas por
-debajo de 12 lb ya no cuentan, esto cubre las de 12 lb o más). Si ese estable **estuvo quieto en
+debajo de 4 lb no cuentan, esto cubre las de 4 lb o más). Si ese estable **estuvo quieto en
 total menos de 0,4 s** y después el peso subió por encima de `valor / 0,7`, se descarta y se
 guarda `0,92 ×` el máximo (`OK … e … x0.92`). Si el estable duró más, la subida es una **presión
 de la mano** y el estable se conserva.
@@ -373,9 +383,9 @@ Limitaciones conocidas:
 
 ### Panel `/` (para el operario)
 
-Orden fijo: **pantalla LED** (PESO grande, PRECIO UNITARIO e IMPORTE TOTAL debajo) +
-indicador ESTABLE → **Nombre de sector** y **Número de piscina** → **objetivos "malla" /
-"BIN"** → **último pesaje guardado** → **peso total acumulado**. El historial completo
+Orden fijo: **Sector · Piscina** (línea compacta, ✎ editar) → **pantalla LED** (solo el
+PESO) + indicador ESTABLE → estado → **último pesaje guardado** → **malla / BIN** con barra
+y objetivo → **peso total acumulado**. El historial completo
 queda plegado bajo **"Historial"**; ahí ya no se muestra info técnica (bus/WiFi/RSSI,
 enlaces a `/config` y `/sniffer`), que sigue disponible entrando a esas rutas directo.
 
@@ -387,14 +397,30 @@ enlaces a `/config` y `/sniffer`), que sigue disponible entrando a esas rutas di
   (`acumulado / objetivo · faltan X lb`). Al cerrarse un grupo sale un **pop-up** grande
   con el total de esa malla/BIN, más pitido y vibración (un solo aviso, el del BIN, si
   cierran los dos a la vez).
+- **Orden del panel** (rediseño 2026-11-06, pedido por el operario): título "Balanza" →
+  línea compacta "Sector · Piscina ✎ editar" (se despliega para escribirlos) → pantalla de
+  la balanza **solo con el PESO** → estado → **último pesaje** → **malla y BIN** lado a lado,
+  cada uno con barra de progreso, %, acumulado / objetivo, lo que falta y su objetivo
+  editable abajo → peso total acumulado → historial. Precio e importe ya no se muestran.
+  Accesibilidad (WCAG 2.1 AA, medida en modo claro y oscuro): contraste ≥ 4,5:1 en todo el
+  texto, etiquetas de 12 px o más, botones de 44 px o más, borrar una fila con un toque
+  (además de deslizar), `<header>`/`<main>` y aviso `aria-live` del último pesaje.
 - **Historial agrupado**: las filas van bajo cabeceras `BIN n` y `Malla m` con su
   subtotal. Cada fila se **borra deslizándola** hacia la izquierda (`GET /weighings/del?id=N`);
   el `#` se renumera sin huecos.
+- **Historial por BIN** (pedido por el operario, 2026-11-06): la lista muestra solo las
+  gavetas del **BIN en curso**. Al completarse un BIN queda vacía al instante ("BIN n: sin
+  gavetas todavía") y se va llenando con el nuevo; el número junto a HISTORIAL cuenta las del
+  BIN en curso (`bCnt` en `/api`). El botón **Ver BIN anteriores** despliega los ya cerrados
+  (entre las últimas 30 filas, p. ej. para borrar una gaveta mal pesada) y se vuelve a ocultar
+  al empezar otro BIN. Es solo visual: el **peso total acumulado**, las muestras, el CSV, los
+  subtotales y los avisos siguen contando todo. Sin objetivo de BIN todo queda en el BIN 1 y se
+  ve como antes.
 - Botón **Borrar todo** → tira de confirmación (Cancelar / Sí, borrar). También
   `POST /weighings/clear` (solo POST: un enlace o la precarga del navegador no borran nada).
 - **`/weighings.csv`**: descarga el historial ordenado del pesaje **1 al n** (del más
   antiguo al más reciente) con las columnas
-  `n;peso;precio_unit;total;malla;bin;hora_local;sector;piscina`. En el panel,
+  `n;peso;malla;bin;hora_local;sector;piscina`. En el panel,
   **"Copiar CSV"** lo pone en el portapapeles (útil en iPhone, donde la ventanita
   automática de la red no deja descargar archivos — para el archivo, abre Safari y entra
   a `192.168.4.1`).
@@ -406,6 +432,12 @@ enlaces a `/config` y `/sniffer`), que sigue disponible entrando a esas rutas di
   fiar). En cuanto vuelve a contestar, se quita sola. El historial solo se pide al ESP
   cuando está **abierto** (al abrirlo, al entrar un pesaje nuevo y cada ~7 s), no todo el
   rato.
+- **Refresco adaptativo**: mientras hay peso en la balanza (y 3 s después de quitarlo, o de
+  entrar un pesaje nuevo) el panel pide `/api` cada **0,25 s**, así el último pesaje y la
+  pantalla se ven en ~0,2-0,4 s aunque las gavetas pasen seguidas; en reposo, cada **1 s**
+  (menos trabajo para el ESP y menos batería del móvil). Antes era siempre 1 s y un pesaje
+  tardaba hasta ~1 s en verse. La espera cuenta desde que llega la respuesta: nunca hay dos
+  peticiones a la vez. Constantes `FAST_MS`, `SLOW_MS` y `ACTIVE_HOLD_MS` en `web_ui.cpp`.
 - Estilo *glassmorphism*; botón sol/luna arriba a la derecha para **modo claro / oscuro**
   (se recuerda en el navegador). Sin fuentes web ni librerías — funciona sin internet.
 - Cada pesaje guarda los **3 campos**: `peso`, `precio unitario`, `total` (el precio/total
@@ -560,7 +592,7 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
 
 - **Simulador de pesajes (`WEIGH_SIM 1` en `config.h`).** El ESP deja de leer la balanza y
   genera gavetas falsas cada pocos segundos (`WEIGH_SIM_GAP_MS`): normales, retiros rápidos,
-  golpes, pausas a mitad de colocación, livianas (< 12 lb) y "mover la balanza" sin gaveta;
+  golpes, pausas a mitad de colocación, livianas (< 4 lb) y "mover la balanza" sin gaveta;
   estas dos últimas **no** deben guardarse. `WEIGH_SIM_TARE 9` = tara activa como en campo
   (la plataforma vacía marca −9); `0` = sin tara, con ruido alrededor de cero. Pasan por el
   pesaje **real** (tarea, guardado en NVS, archivo LittleFS). Cada gaveta queda en `/log` como
@@ -568,7 +600,7 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
   guardan en el historial**: exporta antes los reales y usa "Borrar todo" al terminar. Nunca
   llevar a campo con `WEIGH_SIM 1`.
 - **Prueba de carga (`herramientas/prueba_carga.py`).** Con la PC conectada a la red del ESP,
-  imita varios celulares con el panel abierto (piden `/api` cada segundo con el mismo límite y
+  imita varios celulares con el panel abierto (piden `/api` con el mismo refresco adaptativo, límite y
   reintento que la página), uno con el historial abierto, "celulares lentos" que dejan una
   conexión colgada y descargas periódicas del CSV y de `/log`. Junta el `/log` aunque rote,
   detecta reinicios del ESP y al terminar escribe un informe (y, con el simulador activo,
@@ -607,9 +639,9 @@ escríbelo, **Capturar**; repite con 3–4 pesos MUY distintos; **Resolver mapa*
     (peso; ms que estuvo puesta; ms hasta el 1er valor asentado; nº de lecturas asentadas;
     cuántas cayeron fuera de banda). Si la etiqueta es **`e`** (`OK 41.3 e carga=… max=…
     x0.92`) el valor es una **estimación** (`sost` = valor donde estuvo quieta más tiempo; `x0.92` = 0,92 × máximo).
-  - `PERDIDO(corta|liviano|display) carga=… max=… n=… r=… cap=…`: algo de ≥ 12 lb
+  - `PERDIDO(corta|liviano|display) carga=… max=… n=… r=… cap=…`: algo de ≥ 4 lb
     estuvo en la plataforma y **no se guardó**: `corta` = menos de 600 ms (un golpe de la
-    mano); `liviano` = no asentó y el estimado quedaba por debajo de 12 lb; `display` = el
+    mano); `liviano` = no asentó y el estimado quedaba por debajo de 4 lb; `display` = el
     display se apagó sin pasar por cero. `cap=0`: nunca llegó a asentar; `cap>0`: asentó.
   - `WIFI + cliente AB:CD` / `WIFI - cliente AB:CD motivo=N`: un móvil entra o sale de la
     red (`8` se fue él · `3` deauth · `4` inactividad · `2` autenticación expirada · `15`

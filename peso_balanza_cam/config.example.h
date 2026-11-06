@@ -36,7 +36,7 @@
 #define WIFI_PASS        "ClaveDeTuRouter"
 #define WIFI_AP_FALLBACK 1                    // modo 1: si no conecta en 15 s, crea su red
 
-#define WIFI_HOSTNAME    "balanza-aut"        // -> http://balanza-aut.local/  (mDNS, poco fiable en el AP)
+#define WIFI_HOSTNAME    "balanza"            // -> http://balanza.local/  (mDNS, poco fiable en el AP)
 
 //  Hora por NTP (solo si hay internet).  Sin internet, el movil del operario
 //  pone la hora al abrir el panel (POST /settime); si no, el historial usa
@@ -125,7 +125,7 @@
 //  (Para volver a "kg" busca "lb" en web_ui.cpp -> hay 6 sitios en el panel.)
 //  OJO: estos umbrales son ABSOLUTOS, en la unidad de la balanza.
 #define WEIGH_ZERO_THRESH   0.06f   // <= esto: la gaveta paso por cero (o quedo negativa) -> se cierra
-#define WEIGH_MIN_LOAD      12.0f   // una gaveta empieza al llegar a este peso; menos = tara / nada
+#define WEIGH_MIN_LOAD      4.0f    // una gaveta empieza al llegar a este peso; menos = tara / nada
 #define WEIGH_MAX_LOAD      80.0f   // mas que esto = fuera de rango, se ignora (prueba de display
                                     //   "888.8" al encender, presion fuerte de la mano)
 #define WEIGH_MIN_MS        600     // ms minimos puesta para guardarse (un golpe de la mano no es gaveta)
@@ -155,7 +155,7 @@
 #define WEIGH_PLACE_MS     1000     // fase de colocacion: la referencia puede subir
 
 //  El valor ESTABLE manda siempre.  Excepcion "pausa a mitad de colocacion" (visto en
-//  campo; hoy solo cuenta si la pausa es de 12 lb o mas): si el estable estuvo quieto en
+//  campo; hoy solo cuenta si la pausa es de WEIGH_MIN_LOAD o mas): si el estable estuvo quieto en
 //  total menos de WEIGH_PLAUS_HOLD_MS y despues el peso subio por
 //  encima de valor / WEIGH_PLAUS_FRAC, ese estable no era el peso real y se guarda
 //  WEIGH_RESCUE_FRAC x el maximo.  Si el estable duro mas, una subida posterior es una
